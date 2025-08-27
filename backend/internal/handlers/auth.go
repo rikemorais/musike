@@ -119,7 +119,7 @@ func (h *AuthHandler) SpotifyCallback(c *gin.Context) {
 
 	log.Printf("Authentication successful for user: %s (%s)", user.DisplayName, user.ID)
 
-	frontendURL := "https://localhost:3001/callback"
+	frontendURL := "http://localhost:3001/callback"
 	redirectURL := frontendURL + "?access_token=" + jwtToken + "&spotify_token=" + token.AccessToken + "&user_id=" + user.ID
 
 	c.Redirect(http.StatusFound, redirectURL)
