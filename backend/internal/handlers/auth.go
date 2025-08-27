@@ -15,20 +15,22 @@ import (
 )
 
 type AuthHandler struct {
-	authService    *services.AuthService
-	spotifyService *services.SpotifyService
-	db             *sql.DB
-	processedCodes map[string]bool
-	codesMutex     sync.RWMutex
+	authService     *services.AuthService
+	spotifyService  *services.SpotifyService
+	trackingService *services.TrackingService
+	db              *sql.DB
+	processedCodes  map[string]bool
+	codesMutex      sync.RWMutex
 }
 
-func NewAuthHandler(authService *services.AuthService, spotifyService *services.SpotifyService, db *sql.DB) *AuthHandler {
+func NewAuthHandler(authService *services.AuthService, spotifyService *services.SpotifyService, db *sql.DB, trackingService *services.TrackingService) *AuthHandler {
 	return &AuthHandler{
-		authService:    authService,
-		spotifyService: spotifyService,
-		db:             db,
-		processedCodes: make(map[string]bool),
-		codesMutex:     sync.RWMutex{},
+		authService:     authService,
+		spotifyService:  spotifyService,
+		trackingService: trackingService,
+		db:              db,
+		processedCodes:  make(map[string]bool),
+		codesMutex:      sync.RWMutex{},
 	}
 }
 
@@ -134,6 +136,16 @@ func (h *AuthHandler) SpotifyCallback(c *gin.Context) {
 	}
 
 	log.Printf("Authentication successful for user: %s (%s)", user.DisplayName, user.ID)
+
+	// Auto-start tracking for the user
+	if h.trackingService != nil {
+		err = h.trackingService.StartTracking(dbUserID, token.AccessToken)
+		if err != nil {
+			log.Printf("Warning: Failed to auto-start tracking for user %s: %v", dbUserID, err)
+		} else {
+			log.Printf("Auto-started tracking for user: %s", dbUserID)
+		}
+	}
 
 	frontendURL := "http://localhost:3001/callback"
 	redirectURL := frontendURL + "?access_token=" + jwtToken + "&spotify_token=" + token.AccessToken + "&user_id=" + user.ID
