@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -68,6 +67,8 @@ func main() {
 			},
 		})
 	})
+
+	r.GET("/callback", authHandler.SpotifyCallback)
 
 	public := r.Group("/api/v1")
 	{
