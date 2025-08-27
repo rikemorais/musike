@@ -46,7 +46,7 @@ func main() {
 		log.Println("⚠️  Database not available - tracking service disabled")
 	}
 
-	authHandler := handlers.NewAuthHandler(authService, spotifyService)
+	authHandler := handlers.NewAuthHandler(authService, spotifyService, db)
 	analyticsHandler := handlers.NewAnalyticsHandler(analyticsService, spotifyService)
 	importHandler := handlers.NewImportHandler(db)
 

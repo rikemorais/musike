@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -14,14 +17,16 @@ import (
 type AuthHandler struct {
 	authService    *services.AuthService
 	spotifyService *services.SpotifyService
+	db             *sql.DB
 	processedCodes map[string]bool
 	codesMutex     sync.RWMutex
 }
 
-func NewAuthHandler(authService *services.AuthService, spotifyService *services.SpotifyService) *AuthHandler {
+func NewAuthHandler(authService *services.AuthService, spotifyService *services.SpotifyService, db *sql.DB) *AuthHandler {
 	return &AuthHandler{
 		authService:    authService,
 		spotifyService: spotifyService,
+		db:             db,
 		processedCodes: make(map[string]bool),
 		codesMutex:     sync.RWMutex{},
 	}
@@ -106,8 +111,19 @@ func (h *AuthHandler) SpotifyCallback(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Generating JWT token for user: %s", user.ID)
-	jwtToken, err := h.authService.GenerateJWT(user.ID)
+	// Create or get user from database
+	dbUserID, err := h.createOrGetUser(user)
+	if err != nil {
+		log.Printf("Failed to create/get user in database: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to save user data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	log.Printf("Generating JWT token for user: %s (DB ID: %s)", user.ID, dbUserID)
+	jwtToken, err := h.authService.GenerateJWT(dbUserID)
 	if err != nil {
 		log.Printf("Failed to generate JWT token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -145,4 +161,46 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		"access_token": token.AccessToken,
 		"expires_in":   token.Expiry,
 	})
+}
+
+func (h *AuthHandler) createOrGetUser(spotifyUser *services.SpotifyUser) (string, error) {
+	if h.db == nil {
+		return "", fmt.Errorf("database not available")
+	}
+
+	ctx := context.Background()
+
+	// Try to get existing user first
+	var dbUserID string
+	err := h.db.QueryRowContext(ctx, `
+		SELECT id FROM users WHERE spotify_id = $1
+	`, spotifyUser.ID).Scan(&dbUserID)
+
+	if err == sql.ErrNoRows {
+		// User doesn't exist, create new one
+		followers := spotifyUser.Followers.Total
+
+		var imageURL string
+		if len(spotifyUser.Images) > 0 {
+			imageURL = spotifyUser.Images[0].URL
+		}
+
+		err = h.db.QueryRowContext(ctx, `
+			INSERT INTO users (spotify_id, display_name, email, country, followers_count, profile_image_url) 
+			VALUES ($1, $2, $3, $4, $5, $6) 
+			RETURNING id
+		`, spotifyUser.ID, spotifyUser.DisplayName, spotifyUser.Email, spotifyUser.Country, followers, imageURL).Scan(&dbUserID)
+
+		if err != nil {
+			return "", fmt.Errorf("failed to create user: %v", err)
+		}
+
+		log.Printf("Created new user in database: %s -> %s", spotifyUser.ID, dbUserID)
+	} else if err != nil {
+		return "", fmt.Errorf("failed to query user: %v", err)
+	} else {
+		log.Printf("Found existing user in database: %s -> %s", spotifyUser.ID, dbUserID)
+	}
+
+	return dbUserID, nil
 }
