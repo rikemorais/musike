@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"musike-backend/internal/config"
+
+	"github.com/lib/pq"
 )
 
 type TrackingService struct {
@@ -145,11 +147,11 @@ type RecentlyPlayedTrack struct {
 	PlayedAt string                 `json:"played_at"`
 }
 
-type RecentlyPlayedResponse struct {
+type RecentlyPlayedResponseCustom struct {
 	Items []RecentlyPlayedTrack `json:"items"`
 }
 
-func (s *TrackingService) GetRecentlyPlayed(spotifyToken string, limit int, after int64) (*RecentlyPlayedResponse, error) {
+func (s *TrackingService) GetRecentlyPlayed(spotifyToken string, limit int, after int64) (*RecentlyPlayedResponseCustom, error) {
 	url := fmt.Sprintf("https://api.spotify.com/v1/me/player/recently-played?limit=%d", limit)
 	if after > 0 {
 		url += fmt.Sprintf("&after=%d", after)
@@ -172,7 +174,7 @@ func (s *TrackingService) GetRecentlyPlayed(spotifyToken string, limit int, afte
 		return nil, fmt.Errorf("spotify API error: %d", resp.StatusCode)
 	}
 
-	var response RecentlyPlayedResponse
+	var response RecentlyPlayedResponseCustom
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, err
 	}
@@ -275,19 +277,9 @@ func (s *TrackingService) saveListeningSession(tracking *UserTracking) {
 	}
 	defer tx.Rollback()
 
+	// Salvar artistas com detalhes completos
 	for _, artist := range tracking.LastTrack.Artists {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO artists (id, name, popularity, created_at) 
-			VALUES ($1, $2, $3, NOW()) 
-			ON CONFLICT (id) DO UPDATE SET 
-				name = EXCLUDED.name,
-				popularity = EXCLUDED.popularity
-		`, artist.ID, artist.Name, tracking.LastTrack.Popularity)
-
-		if err != nil {
-			log.Printf("Error saving artist: %v", err)
-			continue
-		}
+		s.saveArtistWithDetails(ctx, tx, tracking.SpotifyToken, artist.ID, artist.Name, tracking.LastTrack.Popularity)
 	}
 
 	album := tracking.LastTrack.Album
@@ -419,11 +411,11 @@ func (s *TrackingService) syncUserRecentlyPlayed(tracking *UserTracking) {
 	// Processar músicas mais antigas primeiro (ordem cronológica)
 	for i := len(recent.Items) - 1; i >= 0; i-- {
 		item := recent.Items[i]
-		s.saveRecentlyPlayedTrack(tracking.UserID, &item)
+		s.saveRecentlyPlayedTrack(tracking.UserID, tracking.SpotifyToken, &item)
 	}
 }
 
-func (s *TrackingService) saveRecentlyPlayedTrack(userID string, recentTrack *RecentlyPlayedTrack) {
+func (s *TrackingService) saveRecentlyPlayedTrack(userID, spotifyToken string, recentTrack *RecentlyPlayedTrack) {
 	if recentTrack.Track == nil {
 		return
 	}
@@ -461,20 +453,9 @@ func (s *TrackingService) saveRecentlyPlayedTrack(userID string, recentTrack *Re
 	}
 	defer tx.Rollback()
 
-	// Salvar artistas
+	// Salvar artistas com detalhes completos
 	for _, artist := range track.Artists {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO artists (id, name, popularity, created_at) 
-			VALUES ($1, $2, $3, NOW()) 
-			ON CONFLICT (id) DO UPDATE SET 
-				name = EXCLUDED.name,
-				popularity = EXCLUDED.popularity
-		`, artist.ID, artist.Name, track.Popularity)
-
-		if err != nil {
-			log.Printf("Error saving artist: %v", err)
-			continue
-		}
+		s.saveArtistWithDetails(ctx, tx, spotifyToken, artist.ID, artist.Name, track.Popularity)
 	}
 
 	// Salvar álbum
@@ -562,6 +543,104 @@ func (s *TrackingService) saveRecentlyPlayedTrack(userID string, recentTrack *Re
 
 	log.Printf("Synced recently played track for user %s: %s by %s (played at %s)",
 		userID, track.Name, strings.Join(getArtistNames(track.Artists), ", "), playedAt.Format("15:04:05"))
+}
+
+func (s *TrackingService) GetArtistDetails(spotifyToken, artistID string) (*SpotifyArtist, error) {
+	url := fmt.Sprintf("https://api.spotify.com/v1/artists/%s", artistID)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+spotifyToken)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("spotify API error: %d", resp.StatusCode)
+	}
+
+	var artist SpotifyArtist
+	if err := json.NewDecoder(resp.Body).Decode(&artist); err != nil {
+		return nil, err
+	}
+
+	return &artist, nil
+}
+
+func (s *TrackingService) saveArtistWithDetails(ctx context.Context, tx *sql.Tx, spotifyToken, artistID, artistName string, popularity int) {
+	log.Printf("Checking artist details for %s (%s)", artistName, artistID)
+
+	// Primeiro verificar se o artista já existe com gêneros
+	var genresCount sql.NullInt32
+	err := tx.QueryRowContext(ctx, `
+		SELECT array_length(genres, 1) FROM artists WHERE id = $1
+	`, artistID).Scan(&genresCount)
+
+	if err == nil && genresCount.Valid && genresCount.Int32 > 0 {
+		log.Printf("Artist %s already has %d genres, skipping enrichment", artistName, genresCount.Int32)
+		// Artista já existe com gêneros, apenas atualizar popularidade se necessário
+		_, err = tx.ExecContext(ctx, `
+			UPDATE artists SET popularity = $2 WHERE id = $1 AND popularity != $2
+		`, artistID, popularity)
+		if err != nil {
+			log.Printf("Error updating artist popularity: %v", err)
+		}
+		return
+	}
+
+	log.Printf("Artist %s needs genre enrichment, fetching from Spotify...", artistName)
+
+	// Buscar detalhes completos do artista no Spotify
+	artistDetails, err := s.GetArtistDetails(spotifyToken, artistID)
+	if err != nil {
+		log.Printf("Error getting artist details for %s: %v", artistID, err)
+		// Fallback: salvar com dados básicos
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO artists (id, name, popularity, created_at) 
+			VALUES ($1, $2, $3, NOW()) 
+			ON CONFLICT (id) DO UPDATE SET 
+				name = EXCLUDED.name,
+				popularity = EXCLUDED.popularity
+		`, artistID, artistName, popularity)
+		return
+	}
+
+	// Imagem do artista
+	var imageURL string
+	if len(artistDetails.Images) > 0 {
+		imageURL = artistDetails.Images[0].URL
+	}
+
+	// Preparar gêneros como array PostgreSQL usando lib/pq
+	var genresArray pq.StringArray
+	if len(artistDetails.Genres) > 0 {
+		genresArray = pq.StringArray(artistDetails.Genres)
+	} else {
+		genresArray = pq.StringArray{}
+	}
+
+	// Salvar artista com todos os detalhes
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO artists (id, name, genres, popularity, image_url, created_at) 
+		VALUES ($1, $2, $3, $4, $5, NOW()) 
+		ON CONFLICT (id) DO UPDATE SET 
+			name = EXCLUDED.name,
+			genres = EXCLUDED.genres,
+			popularity = EXCLUDED.popularity,
+			image_url = EXCLUDED.image_url
+	`, artistID, artistDetails.Name, genresArray, artistDetails.Popularity, imageURL)
+
+	if err != nil {
+		log.Printf("Error saving artist with details: %v", err)
+	} else {
+		log.Printf("Saved artist details for %s: %v", artistDetails.Name, artistDetails.Genres)
+	}
 }
 
 func (s *TrackingService) StopPeriodicTracking() {
