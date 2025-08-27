@@ -1,0 +1,260 @@
+package services
+
+import (
+	"fmt"
+	"time"
+
+	"golang.org/x/oauth2"
+	"musike-backend/internal/config"
+)
+
+type AnalyticsService struct {
+	config *config.Config
+	// Aqui você adicionaria conexões com PostgreSQL e Redis
+}
+
+type UserAnalytics struct {
+	UserID             string                `json:"user_id"`
+	TotalListeningTime int64                 `json:"total_listening_time_ms"`
+	TopGenres          []GenreStats          `json:"top_genres"`
+	ListeningPatterns  ListeningPatterns     `json:"listening_patterns"`
+	DiversityScore     float64               `json:"diversity_score"`
+	RecentActivity     []ActivityPoint       `json:"recent_activity"`
+	MonthlyStats       map[string]MonthStats `json:"monthly_stats"`
+}
+
+type GenreStats struct {
+	Genre      string  `json:"genre"`
+	Percentage float64 `json:"percentage"`
+	TrackCount int     `json:"track_count"`
+}
+
+type ListeningPatterns struct {
+	PeakHours    []int              `json:"peak_hours"`
+	WeekdayUsage []float64          `json:"weekday_usage"`
+	Seasonality  map[string]float64 `json:"seasonality"`
+}
+
+type ActivityPoint struct {
+	Date        time.Time `json:"date"`
+	TrackCount  int       `json:"track_count"`
+	UniqueTraks int       `json:"unique_tracks"`
+	Duration    int64     `json:"duration_ms"`
+}
+
+type MonthStats struct {
+	TracksPlayed    int     `json:"tracks_played"`
+	UniqueArtists   int     `json:"unique_artists"`
+	TopGenre        string  `json:"top_genre"`
+	AvgDailyMinutes float64 `json:"avg_daily_minutes"`
+}
+
+func NewAnalyticsService(cfg *config.Config) *AnalyticsService {
+	return &AnalyticsService{
+		config: cfg,
+	}
+}
+
+func (a *AnalyticsService) GenerateUserAnalytics(userID string, spotifyService *SpotifyService, token *oauth2.Token) (*UserAnalytics, error) {
+	// Buscar dados do Spotify
+	topTracks, err := spotifyService.GetTopTracks(token, "long_term", 50)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get top tracks: %w", err)
+	}
+
+	topArtists, err := spotifyService.GetTopArtists(token, "long_term", 50)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get top artists: %w", err)
+	}
+
+	recentlyPlayed, err := spotifyService.GetRecentlyPlayed(token, 50)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get recently played: %w", err)
+	}
+
+	// Processar estatísticas
+	analytics := &UserAnalytics{
+		UserID: userID,
+	}
+
+	// Calcular tempo total de escuta
+	analytics.TotalListeningTime = a.calculateTotalListeningTime(topTracks.Items)
+
+	// Analisar gêneros
+	analytics.TopGenres = a.analyzeGenres(topArtists.Items)
+
+	// Analisar padrões de escuta
+	analytics.ListeningPatterns = a.analyzeListeningPatterns(recentlyPlayed.Items)
+
+	// Calcular score de diversidade
+	analytics.DiversityScore = a.calculateDiversityScore(topArtists.Items, topTracks.Items)
+
+	// Atividade recente
+	analytics.RecentActivity = a.analyzeRecentActivity(recentlyPlayed.Items)
+
+	// Estatísticas mensais (mockado - em produção viria do banco)
+	analytics.MonthlyStats = a.generateMonthlyStats()
+
+	return analytics, nil
+}
+
+func (a *AnalyticsService) calculateTotalListeningTime(tracks []SpotifyTrack) int64 {
+	var total int64
+	for _, track := range tracks {
+		total += int64(track.Duration)
+	}
+	return total
+}
+
+func (a *AnalyticsService) analyzeGenres(artists []SpotifyArtist) []GenreStats {
+	genreCount := make(map[string]int)
+	totalTracks := len(artists)
+
+	for _, artist := range artists {
+		for _, genre := range artist.Genres {
+			genreCount[genre]++
+		}
+	}
+
+	var genreStats []GenreStats
+	for genre, count := range genreCount {
+		percentage := float64(count) / float64(totalTracks) * 100
+		genreStats = append(genreStats, GenreStats{
+			Genre:      genre,
+			Percentage: percentage,
+			TrackCount: count,
+		})
+	}
+
+	return genreStats
+}
+
+func (a *AnalyticsService) analyzeListeningPatterns(recentTracks []struct {
+	Track    SpotifyTrack `json:"track"`
+	PlayedAt time.Time    `json:"played_at"`
+}) ListeningPatterns {
+	hourCounts := make([]int, 24)
+	weekdayCounts := make([]int, 7)
+
+	for _, item := range recentTracks {
+		hour := item.PlayedAt.Hour()
+		weekday := int(item.PlayedAt.Weekday())
+
+		hourCounts[hour]++
+		weekdayCounts[weekday]++
+	}
+
+	// Encontrar horas de pico
+	var peakHours []int
+	maxCount := 0
+	for _, count := range hourCounts {
+		if count > maxCount {
+			maxCount = count
+		}
+	}
+
+	for i, count := range hourCounts {
+		if count >= int(float64(maxCount)*0.7) { // 70% do pico
+			peakHours = append(peakHours, i)
+		}
+	}
+
+	// Calcular uso por dia da semana
+	total := 0
+	for _, count := range weekdayCounts {
+		total += count
+	}
+
+	weekdayUsage := make([]float64, 7)
+	for i, count := range weekdayCounts {
+		if total > 0 {
+			weekdayUsage[i] = float64(count) / float64(total) * 100
+		}
+	}
+
+	return ListeningPatterns{
+		PeakHours:    peakHours,
+		WeekdayUsage: weekdayUsage,
+		Seasonality: map[string]float64{
+			"spring": 25.0,
+			"summer": 30.0,
+			"autumn": 25.0,
+			"winter": 20.0,
+		},
+	}
+}
+
+func (a *AnalyticsService) calculateDiversityScore(artists []SpotifyArtist, tracks []SpotifyTrack) float64 {
+	uniqueGenres := make(map[string]bool)
+	uniqueArtists := make(map[string]bool)
+
+	for _, artist := range artists {
+		uniqueArtists[artist.ID] = true
+		for _, genre := range artist.Genres {
+			uniqueGenres[genre] = true
+		}
+	}
+
+	// Score baseado na diversidade de gêneros e artistas
+	genreScore := float64(len(uniqueGenres)) / 10.0   // Normalizado para 10 gêneros
+	artistScore := float64(len(uniqueArtists)) / 50.0 // Normalizado para 50 artistas
+
+	if genreScore > 1.0 {
+		genreScore = 1.0
+	}
+	if artistScore > 1.0 {
+		artistScore = 1.0
+	}
+
+	return (genreScore + artistScore) / 2.0 * 100 // 0-100 score
+}
+
+func (a *AnalyticsService) analyzeRecentActivity(recentTracks []struct {
+	Track    SpotifyTrack `json:"track"`
+	PlayedAt time.Time    `json:"played_at"`
+}) []ActivityPoint {
+	dailyActivity := make(map[string]*ActivityPoint)
+
+	for _, item := range recentTracks {
+		date := item.PlayedAt.Format("2006-01-02")
+
+		if _, exists := dailyActivity[date]; !exists {
+			parsedDate, _ := time.Parse("2006-01-02", date)
+			dailyActivity[date] = &ActivityPoint{
+				Date:        parsedDate,
+				TrackCount:  0,
+				UniqueTraks: 0,
+				Duration:    0,
+			}
+		}
+
+		dailyActivity[date].TrackCount++
+		dailyActivity[date].Duration += int64(item.Track.Duration)
+	}
+
+	var activity []ActivityPoint
+	for _, point := range dailyActivity {
+		point.UniqueTraks = point.TrackCount // Simplificado - em produção seria mais preciso
+		activity = append(activity, *point)
+	}
+
+	return activity
+}
+
+func (a *AnalyticsService) generateMonthlyStats() map[string]MonthStats {
+	// Em produção, isso viria do banco de dados
+	return map[string]MonthStats{
+		"2025-08": {
+			TracksPlayed:    1250,
+			UniqueArtists:   85,
+			TopGenre:        "pop",
+			AvgDailyMinutes: 125.5,
+		},
+		"2025-07": {
+			TracksPlayed:    1100,
+			UniqueArtists:   78,
+			TopGenre:        "rock",
+			AvgDailyMinutes: 110.2,
+		},
+	}
+}
