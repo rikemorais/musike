@@ -32,7 +32,7 @@ func main() {
 
 	spotifyService := services.NewSpotifyService(cfg)
 	authService := services.NewAuthService(cfg)
-	analyticsService := services.NewAnalyticsService(cfg)
+	analyticsService := services.NewAnalyticsService(cfg, db)
 
 	var trackingService *services.TrackingService
 	var trackingHandler *handlers.TrackingHandler

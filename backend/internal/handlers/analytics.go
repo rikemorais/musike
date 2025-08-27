@@ -130,9 +130,12 @@ func (h *AnalyticsHandler) GetUserAnalytics(c *gin.Context) {
 		return
 	}
 
+	// Parâmetros de filtro de tempo
+	timeFilter := c.DefaultQuery("time_filter", "6months") // 6months, 1year, alltime
+
 	token := &oauth2.Token{AccessToken: spotifyToken}
 
-	analytics, err := h.analyticsService.GenerateUserAnalytics(userID.(string), h.spotifyService, token)
+	analytics, err := h.analyticsService.GenerateUserAnalytics(userID.(string), timeFilter, h.spotifyService, token)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate analytics"})
 		return

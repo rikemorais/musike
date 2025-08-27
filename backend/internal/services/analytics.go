@@ -1,6 +1,7 @@
 package services
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 type AnalyticsService struct {
 	config *config.Config
+	db     *sql.DB
 }
 
 type UserAnalytics struct {
@@ -48,13 +50,14 @@ type MonthStats struct {
 	AvgDailyMinutes float64 `json:"avg_daily_minutes"`
 }
 
-func NewAnalyticsService(cfg *config.Config) *AnalyticsService {
+func NewAnalyticsService(cfg *config.Config, db *sql.DB) *AnalyticsService {
 	return &AnalyticsService{
 		config: cfg,
+		db:     db,
 	}
 }
 
-func (a *AnalyticsService) GenerateUserAnalytics(userID string, spotifyService *SpotifyService, token *oauth2.Token) (*UserAnalytics, error) {
+func (a *AnalyticsService) GenerateUserAnalytics(userID string, timeFilter string, spotifyService *SpotifyService, token *oauth2.Token) (*UserAnalytics, error) {
 	topTracks, err := spotifyService.GetTopTracks(token, "long_term", 50)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get top tracks: %w", err)
@@ -74,7 +77,12 @@ func (a *AnalyticsService) GenerateUserAnalytics(userID string, spotifyService *
 		UserID: userID,
 	}
 
-	analytics.TotalListeningTime = a.calculateTotalListeningTime(topTracks.Items)
+	// Usar dados do banco local para tempo total baseado no filtro
+	analytics.TotalListeningTime, err = a.calculateTotalListeningTimeFromDB(userID, timeFilter)
+	if err != nil {
+		// Fallback para cálculo baseado na API do Spotify se erro no banco
+		analytics.TotalListeningTime = a.calculateTotalListeningTime(topTracks.Items)
+	}
 
 	analytics.TopGenres = a.analyzeGenres(topArtists.Items)
 
@@ -95,6 +103,56 @@ func (a *AnalyticsService) calculateTotalListeningTime(tracks []SpotifyTrack) in
 		total += int64(track.Duration)
 	}
 	return total
+}
+
+func (a *AnalyticsService) calculateTotalListeningTimeFromDB(userID string, timeFilter string) (int64, error) {
+	if a.db == nil {
+		return 0, fmt.Errorf("database not available")
+	}
+
+	// Determinar o período de filtro baseado no parâmetro
+	var startDate time.Time
+	now := time.Now()
+
+	switch timeFilter {
+	case "6months":
+		startDate = now.AddDate(0, -6, 0)
+	case "1year":
+		startDate = now.AddDate(-1, 0, 0)
+	case "alltime":
+		startDate = time.Time{} // Data zero = sem filtro
+	default:
+		startDate = now.AddDate(0, -6, 0) // Default 6 meses
+	}
+
+	var query string
+	var args []interface{}
+
+	if timeFilter == "alltime" {
+		// Sem filtro de data para 'alltime'
+		query = `
+			SELECT COALESCE(SUM(t.duration_ms), 0) as total_time
+			FROM listening_history lh
+			JOIN tracks t ON lh.track_id = t.id
+			WHERE lh.user_id = $1`
+		args = []interface{}{userID}
+	} else {
+		// Com filtro de data para outros filtros
+		query = `
+			SELECT COALESCE(SUM(t.duration_ms), 0) as total_time
+			FROM listening_history lh
+			JOIN tracks t ON lh.track_id = t.id
+			WHERE lh.user_id = $1 AND lh.played_at >= $2`
+		args = []interface{}{userID, startDate}
+	}
+
+	var totalTime int64
+	err := a.db.QueryRow(query, args...).Scan(&totalTime)
+	if err != nil {
+		return 0, fmt.Errorf("failed to calculate total listening time: %w", err)
+	}
+
+	return totalTime, nil
 }
 
 func (a *AnalyticsService) analyzeGenres(artists []SpotifyArtist) []GenreStats {
