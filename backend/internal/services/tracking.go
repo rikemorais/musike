@@ -140,16 +140,57 @@ func (s *TrackingService) GetCurrentTrack(spotifyToken string) (*CurrentlyPlayin
 	return response.Item, nil
 }
 
+type RecentlyPlayedTrack struct {
+	Track    *CurrentlyPlayingTrack `json:"track"`
+	PlayedAt string                 `json:"played_at"`
+}
+
+type RecentlyPlayedResponse struct {
+	Items []RecentlyPlayedTrack `json:"items"`
+}
+
+func (s *TrackingService) GetRecentlyPlayed(spotifyToken string, limit int, after int64) (*RecentlyPlayedResponse, error) {
+	url := fmt.Sprintf("https://api.spotify.com/v1/me/player/recently-played?limit=%d", limit)
+	if after > 0 {
+		url += fmt.Sprintf("&after=%d", after)
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+spotifyToken)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("spotify API error: %d", resp.StatusCode)
+	}
+
+	var response RecentlyPlayedResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, err
+	}
+
+	return &response, nil
+}
+
 func (s *TrackingService) StartPeriodicTracking() {
 	log.Println("Starting periodic tracking service...")
 
-	ticker := time.NewTicker(30 * time.Second) // Verificar a cada 30 segundos
+	ticker := time.NewTicker(15 * time.Second) // Verificar a cada 15 segundos para ser mais responsivo
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
 			s.updateAllActiveTracking()
+			s.syncRecentlyPlayedTracks()
 		case <-s.stopChannel:
 			log.Println("Stopping periodic tracking service...")
 			return
@@ -255,13 +296,26 @@ func (s *TrackingService) saveListeningSession(tracking *UserTracking) {
 		imageURL = album.Images[0].URL
 	}
 
+	// Handle release date - Spotify sometimes gives just year ("1986") or partial date
+	var releaseDate interface{}
+	if album.ReleaseDate != "" {
+		// If it's just a year (4 digits), convert to date
+		if len(album.ReleaseDate) == 4 {
+			releaseDate = album.ReleaseDate + "-01-01"
+		} else {
+			releaseDate = album.ReleaseDate
+		}
+	} else {
+		releaseDate = nil
+	}
+
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO albums (id, name, release_date, image_url, created_at) 
 		VALUES ($1, $2, $3, $4, NOW()) 
 		ON CONFLICT (id) DO UPDATE SET 
 			name = EXCLUDED.name,
 			image_url = EXCLUDED.image_url
-	`, album.ID, album.Name, album.ReleaseDate, imageURL)
+	`, album.ID, album.Name, releaseDate, imageURL)
 
 	if err != nil {
 		log.Printf("Error saving album: %v", err)
@@ -320,6 +374,194 @@ func (s *TrackingService) saveListeningSession(tracking *UserTracking) {
 
 	log.Printf("Saved listening session for user %s: %s (%.1f seconds)",
 		tracking.UserID, tracking.LastTrack.Name, float64(tracking.TotalPlayTime)/1000)
+}
+
+func (s *TrackingService) syncRecentlyPlayedTracks() {
+	s.trackingMutex.RLock()
+	activeUsers := make([]*UserTracking, 0, len(s.activeTracking))
+	for _, tracking := range s.activeTracking {
+		if tracking.IsActive {
+			activeUsers = append(activeUsers, tracking)
+		}
+	}
+	s.trackingMutex.RUnlock()
+
+	for _, tracking := range activeUsers {
+		s.syncUserRecentlyPlayed(tracking)
+	}
+}
+
+func (s *TrackingService) syncUserRecentlyPlayed(tracking *UserTracking) {
+	// Pegar última entrada no banco para este usuário para saber onde parar
+	ctx := context.Background()
+	var lastPlayedAt time.Time
+	err := s.db.QueryRowContext(ctx, `
+		SELECT MAX(played_at) FROM listening_history WHERE user_id = $1
+	`, tracking.UserID).Scan(&lastPlayedAt)
+
+	if err != nil && err != sql.ErrNoRows {
+		log.Printf("Error getting last played time for user %s: %v", tracking.UserID, err)
+		return
+	}
+
+	// Converter para timestamp Unix em milissegundos
+	var afterTimestamp int64 = 0
+	if !lastPlayedAt.IsZero() {
+		afterTimestamp = lastPlayedAt.UnixMilli()
+	}
+
+	recent, err := s.GetRecentlyPlayed(tracking.SpotifyToken, 50, afterTimestamp)
+	if err != nil {
+		log.Printf("Error getting recently played for user %s: %v", tracking.UserID, err)
+		return
+	}
+
+	// Processar músicas mais antigas primeiro (ordem cronológica)
+	for i := len(recent.Items) - 1; i >= 0; i-- {
+		item := recent.Items[i]
+		s.saveRecentlyPlayedTrack(tracking.UserID, &item)
+	}
+}
+
+func (s *TrackingService) saveRecentlyPlayedTrack(userID string, recentTrack *RecentlyPlayedTrack) {
+	if recentTrack.Track == nil {
+		return
+	}
+
+	// Parse do timestamp
+	playedAt, err := time.Parse(time.RFC3339, recentTrack.PlayedAt)
+	if err != nil {
+		log.Printf("Error parsing played_at time: %v", err)
+		return
+	}
+
+	// Verificar se já existe no banco
+	ctx := context.Background()
+	var count int
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM listening_history 
+		WHERE user_id = $1 AND track_id = $2 AND played_at = $3
+	`, userID, recentTrack.Track.ID, playedAt).Scan(&count)
+
+	if err != nil {
+		log.Printf("Error checking existing track: %v", err)
+		return
+	}
+
+	if count > 0 {
+		return // Já existe
+	}
+
+	track := recentTrack.Track
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("Error starting transaction: %v", err)
+		return
+	}
+	defer tx.Rollback()
+
+	// Salvar artistas
+	for _, artist := range track.Artists {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO artists (id, name, popularity, created_at) 
+			VALUES ($1, $2, $3, NOW()) 
+			ON CONFLICT (id) DO UPDATE SET 
+				name = EXCLUDED.name,
+				popularity = EXCLUDED.popularity
+		`, artist.ID, artist.Name, track.Popularity)
+
+		if err != nil {
+			log.Printf("Error saving artist: %v", err)
+			continue
+		}
+	}
+
+	// Salvar álbum
+	album := track.Album
+	imageURL := ""
+	if len(album.Images) > 0 {
+		imageURL = album.Images[0].URL
+	}
+
+	var releaseDate interface{}
+	if album.ReleaseDate != "" {
+		if len(album.ReleaseDate) == 4 {
+			releaseDate = album.ReleaseDate + "-01-01"
+		} else {
+			releaseDate = album.ReleaseDate
+		}
+	} else {
+		releaseDate = nil
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO albums (id, name, release_date, image_url, created_at) 
+		VALUES ($1, $2, $3, $4, NOW()) 
+		ON CONFLICT (id) DO UPDATE SET 
+			name = EXCLUDED.name,
+			image_url = EXCLUDED.image_url
+	`, album.ID, album.Name, releaseDate, imageURL)
+
+	if err != nil {
+		log.Printf("Error saving album: %v", err)
+		return
+	}
+
+	// Salvar track
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO tracks (id, name, album_id, duration_ms, popularity, preview_url, created_at) 
+		VALUES ($1, $2, $3, $4, $5, $6, NOW()) 
+		ON CONFLICT (id) DO UPDATE SET 
+			name = EXCLUDED.name,
+			duration_ms = EXCLUDED.duration_ms,
+			popularity = EXCLUDED.popularity,
+			preview_url = EXCLUDED.preview_url
+	`, track.ID, track.Name, album.ID, track.DurationMs, track.Popularity, track.PreviewURL)
+
+	if err != nil {
+		log.Printf("Error saving track: %v", err)
+		return
+	}
+
+	// Salvar relações track-artist
+	for _, artist := range track.Artists {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO track_artists (track_id, artist_id) 
+			VALUES ($1, $2) 
+			ON CONFLICT DO NOTHING
+		`, track.ID, artist.ID)
+
+		if err != nil {
+			log.Printf("Error saving track-artist relation: %v", err)
+		}
+	}
+
+	// Salvar histórico
+	contextType := ""
+	contextURI := ""
+	if track.Context != nil {
+		contextType = track.Context.Type
+		contextURI = track.Context.URI
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO listening_history (user_id, track_id, played_at, context_type, context_uri, created_at) 
+		VALUES ($1, $2, $3, $4, $5, NOW())
+	`, userID, track.ID, playedAt, contextType, contextURI)
+
+	if err != nil {
+		log.Printf("Error saving listening history: %v", err)
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		log.Printf("Error committing transaction: %v", err)
+		return
+	}
+
+	log.Printf("Synced recently played track for user %s: %s by %s (played at %s)",
+		userID, track.Name, strings.Join(getArtistNames(track.Artists), ", "), playedAt.Format("15:04:05"))
 }
 
 func (s *TrackingService) StopPeriodicTracking() {
