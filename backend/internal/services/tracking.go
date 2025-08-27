@@ -383,36 +383,121 @@ func (s *TrackingService) syncRecentlyPlayedTracks() {
 	}
 }
 
+func (s *TrackingService) ForceFullSync(userID string) error {
+	s.trackingMutex.RLock()
+	tracking, exists := s.activeTracking[userID]
+	s.trackingMutex.RUnlock()
+
+	if !exists || !tracking.IsActive {
+		log.Printf("User %s is not actively tracked, attempting to start tracking for sync", userID)
+
+		// Para usar o ForceFullSync, precisamos que o usuário faça login novamente
+		// ou implemente uma forma de armazenar tokens de forma persistente
+		return fmt.Errorf("user %s is not being tracked. Please login again to start tracking", userID)
+	}
+
+	log.Printf("Force full sync for actively tracked user: %s", userID)
+	s.syncUserRecentlyPlayed(tracking)
+	return nil
+}
+
 func (s *TrackingService) syncUserRecentlyPlayed(tracking *UserTracking) {
-	// Pegar última entrada no banco para este usuário para saber onde parar
 	ctx := context.Background()
-	var lastPlayedAt time.Time
-	err := s.db.QueryRowContext(ctx, `
-		SELECT MAX(played_at) FROM listening_history WHERE user_id = $1
-	`, tracking.UserID).Scan(&lastPlayedAt)
+	log.Printf("Starting full sync for user %s - fetching up to 100 recent tracks...", tracking.UserID)
 
-	if err != nil && err != sql.ErrNoRows {
-		log.Printf("Error getting last played time for user %s: %v", tracking.UserID, err)
-		return
-	}
+	allTracks := []RecentlyPlayedTrack{}
+	processedTracks := make(map[string]bool) // Para evitar duplicatas usando track_id + played_at
 
-	// Converter para timestamp Unix em milissegundos
+	// Buscar em lotes de 50 (máximo da API do Spotify)
 	var afterTimestamp int64 = 0
-	if !lastPlayedAt.IsZero() {
-		afterTimestamp = lastPlayedAt.UnixMilli()
+	totalFetched := 0
+
+	for totalFetched < 100 {
+		limit := 50
+		if totalFetched+limit > 100 {
+			limit = 100 - totalFetched
+		}
+
+		log.Printf("Fetching batch: limit=%d, after=%d, totalFetched=%d", limit, afterTimestamp, totalFetched)
+
+		recent, err := s.GetRecentlyPlayed(tracking.SpotifyToken, limit, afterTimestamp)
+		if err != nil {
+			log.Printf("Error getting recently played for user %s: %v", tracking.UserID, err)
+			break
+		}
+
+		if len(recent.Items) == 0 {
+			log.Printf("No more tracks found, stopping sync")
+			break
+		}
+
+		// Processar cada música do lote
+		batchNewTracks := 0
+		for _, item := range recent.Items {
+			if item.Track == nil {
+				continue
+			}
+
+			// Criar chave única: track_id + played_at
+			uniqueKey := item.Track.ID + "|" + item.PlayedAt
+
+			if !processedTracks[uniqueKey] {
+				processedTracks[uniqueKey] = true
+				allTracks = append(allTracks, item)
+				batchNewTracks++
+			}
+		}
+
+		totalFetched += len(recent.Items)
+		log.Printf("Batch processed: %d new tracks, %d total processed", batchNewTracks, totalFetched)
+
+		// Se recebeu menos músicas que o limite, significa que chegou ao fim
+		if len(recent.Items) < limit {
+			log.Printf("Received fewer tracks than limit, reached end of history")
+			break
+		}
+
+		// Usar o timestamp da última música como "after" para próximo lote
+		if len(recent.Items) > 0 {
+			lastTrack := recent.Items[len(recent.Items)-1]
+			playedAt, err := time.Parse(time.RFC3339, lastTrack.PlayedAt)
+			if err == nil {
+				afterTimestamp = playedAt.UnixMilli()
+			}
+		}
 	}
 
-	recent, err := s.GetRecentlyPlayed(tracking.SpotifyToken, 50, afterTimestamp)
-	if err != nil {
-		log.Printf("Error getting recently played for user %s: %v", tracking.UserID, err)
-		return
+	log.Printf("Sync completed for user %s: %d unique tracks found", tracking.UserID, len(allTracks))
+
+	// Processar todas as músicas em ordem cronológica (mais antigas primeiro)
+	newTracksSaved := 0
+	for i := len(allTracks) - 1; i >= 0; i-- {
+		item := allTracks[i]
+
+		// Verificar se já existe no banco antes de salvar
+		playedAt, err := time.Parse(time.RFC3339, item.PlayedAt)
+		if err != nil {
+			continue
+		}
+
+		var count int
+		err = s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM listening_history 
+			WHERE user_id = $1 AND track_id = $2 AND played_at = $3
+		`, tracking.UserID, item.Track.ID, playedAt).Scan(&count)
+
+		if err != nil {
+			log.Printf("Error checking existing track: %v", err)
+			continue
+		}
+
+		if count == 0 {
+			s.saveRecentlyPlayedTrack(tracking.UserID, tracking.SpotifyToken, &item)
+			newTracksSaved++
+		}
 	}
 
-	// Processar músicas mais antigas primeiro (ordem cronológica)
-	for i := len(recent.Items) - 1; i >= 0; i-- {
-		item := recent.Items[i]
-		s.saveRecentlyPlayedTrack(tracking.UserID, tracking.SpotifyToken, &item)
-	}
+	log.Printf("Sync finished for user %s: %d new tracks saved to database", tracking.UserID, newTracksSaved)
 }
 
 func (s *TrackingService) saveRecentlyPlayedTrack(userID, spotifyToken string, recentTrack *RecentlyPlayedTrack) {

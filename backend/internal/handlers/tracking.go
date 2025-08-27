@@ -124,3 +124,25 @@ func (h *TrackingHandler) GetRecentListeningHistory(c *gin.Context) {
 		"message": "Listening history tracking is now active. Check back in a few minutes to see your recent tracks.",
 	})
 }
+
+func (h *TrackingHandler) ForceFullSync(c *gin.Context) {
+	userID := c.Param("userID")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID is required"})
+		return
+	}
+
+	log.Printf("Force full sync requested for user: %s", userID)
+
+	err := h.trackingService.ForceFullSync(userID)
+	if err != nil {
+		log.Printf("Error during force full sync for user %s: %v", userID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sync tracks: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Full sync completed successfully",
+		"user_id": userID,
+	})
+}

@@ -99,6 +99,15 @@ func main() {
 		}
 	}
 
+	// Rota pública para sync forçado (apenas para debug)
+	public.POST("/tracking/force-sync/:userID", func(c *gin.Context) {
+		if trackingHandler != nil {
+			trackingHandler.ForceFullSync(c)
+		} else {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Tracking service not available"})
+		}
+	})
+
 	if cfg.UseHTTPS {
 		log.Printf("🔐 Starting HTTPS server on port %s", cfg.Port)
 
