@@ -23,8 +23,6 @@ func NewAnalyticsHandler(analyticsService *services.AnalyticsService, spotifySer
 }
 
 func (h *AnalyticsHandler) GetUserProfile(c *gin.Context) {
-	// Em produção, você pegaria o token do Spotify do banco/Redis usando o userID
-	// Por simplicidade, vamos esperar que seja passado no header
 	spotifyToken := c.GetHeader("Spotify-Token")
 	if spotifyToken == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Spotify token required"})
@@ -150,8 +148,6 @@ func (h *AnalyticsHandler) GetRecommendations(c *gin.Context) {
 		return
 	}
 
-	// Por simplicidade, vamos usar seeds fixos
-	// Em produção, isso viria dos top tracks/artists do usuário
 	seedArtists := []string{"4NHQUGzhtTLFvgF5SZesLK"} // Tame Impala
 	seedTracks := []string{"5ghIJDpPoe3CfHMGu71E6T"}  // Blinding Lights
 

@@ -51,7 +51,6 @@ func (h *AuthHandler) SpotifyCallback(c *gin.Context) {
 	log.Printf("Spotify callback received - Code: %s, Error: %s, State: %s",
 		code != "", error, state)
 
-	// Verificar se o código já foi processado
 	if code != "" {
 		h.codesMutex.Lock()
 		if h.processedCodes[code] {
@@ -85,7 +84,6 @@ func (h *AuthHandler) SpotifyCallback(c *gin.Context) {
 		return
 	}
 
-	// Trocar código por token
 	log.Printf("Exchanging code for token...")
 	token, err := h.authService.ExchangeCode(code)
 	if err != nil {
@@ -97,7 +95,6 @@ func (h *AuthHandler) SpotifyCallback(c *gin.Context) {
 		return
 	}
 
-	// Buscar perfil do usuário no Spotify
 	log.Printf("Getting user profile from Spotify...")
 	user, err := h.spotifyService.GetUserProfile(token)
 	if err != nil {
@@ -109,7 +106,6 @@ func (h *AuthHandler) SpotifyCallback(c *gin.Context) {
 		return
 	}
 
-	// Gerar JWT token
 	log.Printf("Generating JWT token for user: %s", user.ID)
 	jwtToken, err := h.authService.GenerateJWT(user.ID)
 	if err != nil {
@@ -120,9 +116,6 @@ func (h *AuthHandler) SpotifyCallback(c *gin.Context) {
 		})
 		return
 	}
-
-	// Aqui você salvaria o token do Spotify no banco/Redis para uso posterior
-	// Para este exemplo, vamos retornar tudo
 
 	log.Printf("Authentication successful for user: %s (%s)", user.DisplayName, user.ID)
 

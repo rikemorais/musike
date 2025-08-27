@@ -23,7 +23,6 @@ type Claims struct {
 }
 
 func NewAuthService(cfg *config.Config) *AuthService {
-	// Validar configurações críticas
 	if cfg.SpotifyClientID == "" {
 		log.Fatal("SPOTIFY_CLIENT_ID is required")
 	}

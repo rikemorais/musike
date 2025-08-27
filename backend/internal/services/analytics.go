@@ -10,7 +10,6 @@ import (
 
 type AnalyticsService struct {
 	config *config.Config
-	// Aqui você adicionaria conexões com PostgreSQL e Redis
 }
 
 type UserAnalytics struct {
@@ -56,7 +55,6 @@ func NewAnalyticsService(cfg *config.Config) *AnalyticsService {
 }
 
 func (a *AnalyticsService) GenerateUserAnalytics(userID string, spotifyService *SpotifyService, token *oauth2.Token) (*UserAnalytics, error) {
-	// Buscar dados do Spotify
 	topTracks, err := spotifyService.GetTopTracks(token, "long_term", 50)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get top tracks: %w", err)
@@ -72,27 +70,20 @@ func (a *AnalyticsService) GenerateUserAnalytics(userID string, spotifyService *
 		return nil, fmt.Errorf("failed to get recently played: %w", err)
 	}
 
-	// Processar estatísticas
 	analytics := &UserAnalytics{
 		UserID: userID,
 	}
 
-	// Calcular tempo total de escuta
 	analytics.TotalListeningTime = a.calculateTotalListeningTime(topTracks.Items)
 
-	// Analisar gêneros
 	analytics.TopGenres = a.analyzeGenres(topArtists.Items)
 
-	// Analisar padrões de escuta
 	analytics.ListeningPatterns = a.analyzeListeningPatterns(recentlyPlayed.Items)
 
-	// Calcular score de diversidade
 	analytics.DiversityScore = a.calculateDiversityScore(topArtists.Items, topTracks.Items)
 
-	// Atividade recente
 	analytics.RecentActivity = a.analyzeRecentActivity(recentlyPlayed.Items)
 
-	// Estatísticas mensais (mockado - em produção viria do banco)
 	analytics.MonthlyStats = a.generateMonthlyStats()
 
 	return analytics, nil
@@ -144,7 +135,6 @@ func (a *AnalyticsService) analyzeListeningPatterns(recentTracks []struct {
 		weekdayCounts[weekday]++
 	}
 
-	// Encontrar horas de pico
 	var peakHours []int
 	maxCount := 0
 	for _, count := range hourCounts {
@@ -159,7 +149,6 @@ func (a *AnalyticsService) analyzeListeningPatterns(recentTracks []struct {
 		}
 	}
 
-	// Calcular uso por dia da semana
 	total := 0
 	for _, count := range weekdayCounts {
 		total += count
@@ -195,7 +184,6 @@ func (a *AnalyticsService) calculateDiversityScore(artists []SpotifyArtist, trac
 		}
 	}
 
-	// Score baseado na diversidade de gêneros e artistas
 	genreScore := float64(len(uniqueGenres)) / 10.0   // Normalizado para 10 gêneros
 	artistScore := float64(len(uniqueArtists)) / 50.0 // Normalizado para 50 artistas
 
@@ -242,7 +230,6 @@ func (a *AnalyticsService) analyzeRecentActivity(recentTracks []struct {
 }
 
 func (a *AnalyticsService) generateMonthlyStats() map[string]MonthStats {
-	// Em produção, isso viria do banco de dados
 	return map[string]MonthStats{
 		"2025-08": {
 			TracksPlayed:    1250,
