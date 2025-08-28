@@ -15,13 +15,15 @@ type AnalyticsService struct {
 }
 
 type UserAnalytics struct {
-	UserID             string                `json:"user_id"`
-	TotalListeningTime int64                 `json:"total_listening_time_ms"`
-	TopGenres          []GenreStats          `json:"top_genres"`
-	ListeningPatterns  ListeningPatterns     `json:"listening_patterns"`
-	DiversityScore     float64               `json:"diversity_score"`
-	RecentActivity     []ActivityPoint       `json:"recent_activity"`
-	MonthlyStats       map[string]MonthStats `json:"monthly_stats"`
+	UserID                 string                `json:"user_id"`
+	TotalListeningTime     int64                 `json:"total_listening_time_ms"`
+	ActualListeningTime    int64                 `json:"actual_listening_time_ms"`
+	AvgListeningPercentage float64               `json:"avg_listening_percentage"`
+	TopGenres              []GenreStats          `json:"top_genres"`
+	ListeningPatterns      ListeningPatterns     `json:"listening_patterns"`
+	DiversityScore         float64               `json:"diversity_score"`
+	RecentActivity         []ActivityPoint       `json:"recent_activity"`
+	MonthlyStats           map[string]MonthStats `json:"monthly_stats"`
 }
 
 type GenreStats struct {
@@ -84,9 +86,22 @@ func (a *AnalyticsService) GenerateUserAnalytics(userID string, timeFilter strin
 		analytics.TotalListeningTime = a.calculateTotalListeningTime(topTracks.Items)
 	}
 
+	// Calcular tempo de escuta real e porcentagem média
+	analytics.ActualListeningTime, analytics.AvgListeningPercentage, err = a.calculateActualListeningStats(userID, timeFilter)
+	if err != nil {
+		// Se não houver dados de tempo de escuta real, usar o tempo total como fallback
+		analytics.ActualListeningTime = analytics.TotalListeningTime
+		analytics.AvgListeningPercentage = 100.0
+	}
+
 	analytics.TopGenres = a.analyzeGenres(topArtists.Items)
 
-	analytics.ListeningPatterns = a.analyzeListeningPatterns(recentlyPlayed.Items)
+	// Usar dados do banco local para padrões de escuta baseado no filtro
+	analytics.ListeningPatterns, err = a.analyzeListeningPatternsFromDB(userID, timeFilter)
+	if err != nil {
+		// Fallback para análise baseada na API do Spotify se erro no banco
+		analytics.ListeningPatterns = a.analyzeListeningPatterns(recentlyPlayed.Items)
+	}
 
 	analytics.DiversityScore = a.calculateDiversityScore(topArtists.Items, topTracks.Items)
 
@@ -129,7 +144,7 @@ func (a *AnalyticsService) calculateTotalListeningTimeFromDB(userID string, time
 	var args []interface{}
 
 	if timeFilter == "alltime" {
-		// Sem filtro de data para 'alltime'
+		// Sempre usar duração da música para o tempo total (independente do tempo escutado)
 		query = `
 			SELECT COALESCE(SUM(t.duration_ms), 0) as total_time
 			FROM listening_history lh
@@ -153,6 +168,180 @@ func (a *AnalyticsService) calculateTotalListeningTimeFromDB(userID string, time
 	}
 
 	return totalTime, nil
+}
+
+func (a *AnalyticsService) calculateActualListeningStats(userID string, timeFilter string) (int64, float64, error) {
+	if a.db == nil {
+		return 0, 0.0, fmt.Errorf("database not available")
+	}
+
+	// Determinar o período de filtro baseado no parâmetro
+	var startDate time.Time
+	now := time.Now()
+
+	switch timeFilter {
+	case "6months":
+		startDate = now.AddDate(0, -6, 0)
+	case "1year":
+		startDate = now.AddDate(-1, 0, 0)
+	case "alltime":
+		startDate = time.Time{} // Data zero = sem filtro
+	default:
+		startDate = now.AddDate(0, -6, 0) // Default 6 meses
+	}
+
+	var query string
+	var args []interface{}
+
+	if timeFilter == "alltime" {
+		query = `
+			SELECT 
+				COALESCE(SUM(lh.listened_duration_ms), 0) as actual_time,
+				COALESCE(AVG(lh.listening_percentage), 0) as avg_percentage,
+				COUNT(*) as total_tracks
+			FROM listening_history lh
+			WHERE lh.user_id = $1 AND lh.listened_duration_ms > 0`
+		args = []interface{}{userID}
+	} else {
+		query = `
+			SELECT 
+				COALESCE(SUM(lh.listened_duration_ms), 0) as actual_time,
+				COALESCE(AVG(lh.listening_percentage), 0) as avg_percentage,
+				COUNT(*) as total_tracks
+			FROM listening_history lh
+			WHERE lh.user_id = $1 AND lh.played_at >= $2 AND lh.listened_duration_ms > 0`
+		args = []interface{}{userID, startDate}
+	}
+
+	var actualTime int64
+	var avgPercentage float64
+	var totalTracks int
+
+	err := a.db.QueryRow(query, args...).Scan(&actualTime, &avgPercentage, &totalTracks)
+	if err != nil {
+		return 0, 0.0, fmt.Errorf("failed to calculate actual listening stats: %w", err)
+	}
+
+	// Se não há dados de tempo escutado, retornar erro para usar fallback
+	if totalTracks == 0 {
+		return 0, 0.0, fmt.Errorf("no listening duration data available")
+	}
+
+	return actualTime, avgPercentage, nil
+}
+
+func (a *AnalyticsService) analyzeListeningPatternsFromDB(userID string, timeFilter string) (ListeningPatterns, error) {
+	if a.db == nil {
+		return ListeningPatterns{}, fmt.Errorf("database not available")
+	}
+
+	// Determinar o período de filtro baseado no parâmetro
+	var startDate time.Time
+	now := time.Now()
+
+	switch timeFilter {
+	case "6months":
+		startDate = now.AddDate(0, -6, 0)
+	case "1year":
+		startDate = now.AddDate(-1, 0, 0)
+	case "alltime":
+		startDate = time.Time{} // Data zero = sem filtro
+	default:
+		startDate = now.AddDate(0, -6, 0) // Default 6 meses
+	}
+
+	var query string
+	var args []interface{}
+
+	if timeFilter == "alltime" {
+		// Sem filtro de data para 'alltime'
+		query = `
+			SELECT 
+				EXTRACT(HOUR FROM lh.played_at) as hour,
+				EXTRACT(DOW FROM lh.played_at) as weekday,
+				COUNT(*) as count
+			FROM listening_history lh
+			WHERE lh.user_id = $1
+			GROUP BY EXTRACT(HOUR FROM lh.played_at), EXTRACT(DOW FROM lh.played_at)
+			ORDER BY hour, weekday`
+		args = []interface{}{userID}
+	} else {
+		// Com filtro de data para outros filtros
+		query = `
+			SELECT 
+				EXTRACT(HOUR FROM lh.played_at) as hour,
+				EXTRACT(DOW FROM lh.played_at) as weekday,
+				COUNT(*) as count
+			FROM listening_history lh
+			WHERE lh.user_id = $1 AND lh.played_at >= $2
+			GROUP BY EXTRACT(HOUR FROM lh.played_at), EXTRACT(DOW FROM lh.played_at)
+			ORDER BY hour, weekday`
+		args = []interface{}{userID, startDate}
+	}
+
+	rows, err := a.db.Query(query, args...)
+	if err != nil {
+		return ListeningPatterns{}, fmt.Errorf("failed to query listening patterns: %w", err)
+	}
+	defer rows.Close()
+
+	// Inicializar contadores
+	hourCounts := make([]int, 24)
+	weekdayCounts := make([]int, 7)
+
+	// Processar resultados
+	for rows.Next() {
+		var hour, weekday, count int
+		if err := rows.Scan(&hour, &weekday, &count); err != nil {
+			continue
+		}
+
+		if hour >= 0 && hour < 24 {
+			hourCounts[hour] += count
+		}
+		if weekday >= 0 && weekday < 7 {
+			weekdayCounts[weekday] += count
+		}
+	}
+
+	// Calcular horários de pico
+	var peakHours []int
+	maxCount := 0
+	for _, count := range hourCounts {
+		if count > maxCount {
+			maxCount = count
+		}
+	}
+
+	for i, count := range hourCounts {
+		if count >= int(float64(maxCount)*0.7) { // 70% do pico
+			peakHours = append(peakHours, i)
+		}
+	}
+
+	// Calcular percentuais dos dias da semana
+	total := 0
+	for _, count := range weekdayCounts {
+		total += count
+	}
+
+	weekdayUsage := make([]float64, 7)
+	for i, count := range weekdayCounts {
+		if total > 0 {
+			weekdayUsage[i] = float64(count) / float64(total) * 100
+		}
+	}
+
+	return ListeningPatterns{
+		PeakHours:    peakHours,
+		WeekdayUsage: weekdayUsage,
+		Seasonality: map[string]float64{
+			"spring": 25.0,
+			"summer": 30.0,
+			"autumn": 25.0,
+			"winter": 20.0,
+		},
+	}, nil
 }
 
 func (a *AnalyticsService) analyzeGenres(artists []SpotifyArtist) []GenreStats {

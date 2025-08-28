@@ -349,10 +349,19 @@ func (s *TrackingService) saveListeningSession(tracking *UserTracking) {
 		contextURI = tracking.LastTrack.Context.URI
 	}
 
+	// Calcular porcentagem escutada baseado no tempo de duração da música
+	listeningPercentage := float64(0)
+	if tracking.LastTrack.DurationMs > 0 {
+		listeningPercentage = (float64(tracking.TotalPlayTime) / float64(tracking.LastTrack.DurationMs)) * 100
+		if listeningPercentage > 100 {
+			listeningPercentage = 100
+		}
+	}
+
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO listening_history (user_id, track_id, played_at, context_type, context_uri, created_at) 
-		VALUES ($1, $2, $3, $4, $5, NOW())
-	`, tracking.UserID, tracking.LastTrack.ID, tracking.SessionStart, contextType, contextURI)
+		INSERT INTO listening_history (user_id, track_id, played_at, context_type, context_uri, listened_duration_ms, listening_percentage, created_at) 
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+	`, tracking.UserID, tracking.LastTrack.ID, tracking.SessionStart, contextType, contextURI, tracking.TotalPlayTime, listeningPercentage)
 
 	if err != nil {
 		log.Printf("Error saving listening history: %v", err)
@@ -611,10 +620,15 @@ func (s *TrackingService) saveRecentlyPlayedTrack(userID, spotifyToken string, r
 		contextURI = track.Context.URI
 	}
 
+	// Para músicas do recently-played, assumir que foi escutada completamente (100%)
+	// pois o Spotify só reporta no recently-played se foi tocada substancialmente
+	listeningPercentage := 100.0
+	listenedDuration := int64(track.DurationMs)
+
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO listening_history (user_id, track_id, played_at, context_type, context_uri, created_at) 
-		VALUES ($1, $2, $3, $4, $5, NOW())
-	`, userID, track.ID, playedAt, contextType, contextURI)
+		INSERT INTO listening_history (user_id, track_id, played_at, context_type, context_uri, listened_duration_ms, listening_percentage, created_at) 
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+	`, userID, track.ID, playedAt, contextType, contextURI, listenedDuration, listeningPercentage)
 
 	if err != nil {
 		log.Printf("Error saving listening history: %v", err)
