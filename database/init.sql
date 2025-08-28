@@ -69,6 +69,8 @@ CREATE TABLE listening_history (
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     track_id VARCHAR(255) REFERENCES tracks(id),
     played_at TIMESTAMP NOT NULL,
+    listened_duration_ms INTEGER DEFAULT 0, -- ms_played dos dados do Spotify
+    listening_percentage DECIMAL(5,2) DEFAULT 0, -- calculado quando disponível
     context_type VARCHAR(50), -- playlist, album, artist, etc.
     context_uri VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

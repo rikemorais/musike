@@ -75,6 +75,7 @@ func main() {
 		public.GET("/auth/spotify", authHandler.SpotifyAuth)
 		public.GET("/auth/callback", authHandler.SpotifyCallback)
 		public.POST("/auth/refresh", authHandler.RefreshToken)
+		public.POST("/import/spotify-final", importHandler.ImportSpotifyData)
 	}
 
 	protected := r.Group("/api/v1")
