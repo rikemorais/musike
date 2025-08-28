@@ -144,9 +144,15 @@ func (a *AnalyticsService) calculateTotalListeningTimeFromDB(userID string, time
 	var args []interface{}
 
 	if timeFilter == "alltime" {
-		// Sempre usar duração da música para o tempo total (independente do tempo escutado)
+		// Para tempo total, usar TODAS as escutas (sem filtro de duração mínima)
+		// Usar duração da música quando disponível, senão usar tempo escutado
 		query = `
-			SELECT COALESCE(SUM(t.duration_ms), 0) as total_time
+			SELECT COALESCE(SUM(
+				CASE 
+					WHEN t.duration_ms > 0 THEN t.duration_ms
+					ELSE GREATEST(lh.listened_duration_ms, 0)
+				END
+			), 0) as total_time
 			FROM listening_history lh
 			JOIN tracks t ON lh.track_id = t.id
 			WHERE lh.user_id = $1`
@@ -154,7 +160,12 @@ func (a *AnalyticsService) calculateTotalListeningTimeFromDB(userID string, time
 	} else {
 		// Com filtro de data para outros filtros
 		query = `
-			SELECT COALESCE(SUM(t.duration_ms), 0) as total_time
+			SELECT COALESCE(SUM(
+				CASE 
+					WHEN t.duration_ms > 0 THEN t.duration_ms
+					ELSE GREATEST(lh.listened_duration_ms, 0)
+				END
+			), 0) as total_time
 			FROM listening_history lh
 			JOIN tracks t ON lh.track_id = t.id
 			WHERE lh.user_id = $1 AND lh.played_at >= $2`
