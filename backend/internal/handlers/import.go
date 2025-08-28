@@ -36,7 +36,7 @@ type SpotifyStreamingData struct {
 	Shuffle          bool   `json:"shuffle"`
 	Skipped          *bool  `json:"skipped"`
 	Offline          bool   `json:"offline"`
-	OfflineTimestamp string `json:"offline_timestamp"`
+	OfflineTimestamp *int64 `json:"offline_timestamp"`
 	IncognitoMode    bool   `json:"incognito_mode"`
 }
 
@@ -101,11 +101,17 @@ func (h *ImportHandler) ImportSpotifyData(c *gin.Context) {
 
 	files := form.File["files"]
 	if len(files) == 0 {
+		log.Printf("No files found in form")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No files provided"})
 		return
 	}
 
 	log.Printf("Processing %d files for import", len(files))
+
+	// Debug: log all form fields
+	for key := range form.File {
+		log.Printf("Form field found: %s with %d files", key, len(form.File[key]))
+	}
 
 	result := &ImportResult{
 		Status: "processing",
@@ -119,26 +125,35 @@ func (h *ImportHandler) ImportSpotifyData(c *gin.Context) {
 
 		file, err := fileHeader.Open()
 		if err != nil {
+			log.Printf("Failed to open file %s: %v", fileHeader.Filename, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("Failed to open file %s: %v", fileHeader.Filename, err))
 			continue
 		}
 		defer file.Close()
 
+		log.Printf("File opened successfully: %s", fileHeader.Filename)
+
 		var fileData []SpotifyStreamingData
 
 		if strings.HasSuffix(fileHeader.Filename, ".zip") {
+			log.Printf("Processing as ZIP file")
 			fileData, err = h.processZipFile(file, fileHeader.Size)
 		} else if strings.HasSuffix(fileHeader.Filename, ".json") {
+			log.Printf("Processing as JSON file")
 			fileData, err = h.processJSONFile(file)
 		} else {
+			log.Printf("Unsupported file format: %s", fileHeader.Filename)
 			result.Errors = append(result.Errors, fmt.Sprintf("Unsupported file format: %s", fileHeader.Filename))
 			continue
 		}
 
 		if err != nil {
+			log.Printf("Failed to process file %s: %v", fileHeader.Filename, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("Failed to process file %s: %v", fileHeader.Filename, err))
 			continue
 		}
+
+		log.Printf("Successfully processed file %s: got %d records", fileHeader.Filename, len(fileData))
 
 		allStreamingData = append(allStreamingData, fileData...)
 		result.ProcessedFiles++
@@ -146,6 +161,18 @@ func (h *ImportHandler) ImportSpotifyData(c *gin.Context) {
 
 	result.ProcessedTracks = len(allStreamingData)
 	result.ImportSummary = h.generateSummary(allStreamingData)
+
+	// Salvar dados no banco de dados
+	if len(allStreamingData) > 0 {
+		err := h.saveToDatabase(userID.(string), allStreamingData)
+		if err != nil {
+			log.Printf("Failed to save data to database for user %s: %v", userID, err)
+			result.Errors = append(result.Errors, fmt.Sprintf("Failed to save data to database: %v", err))
+		} else {
+			log.Printf("Successfully saved %d streaming records to database for user %s", len(allStreamingData), userID)
+		}
+	}
+
 	result.ProcessingTime = time.Since(startTime)
 
 	if len(result.Errors) > 0 {
@@ -202,22 +229,56 @@ func (h *ImportHandler) processZipFile(file multipart.File, size int64) ([]Spoti
 }
 
 func (h *ImportHandler) processJSONFile(file io.Reader) ([]SpotifyStreamingData, error) {
-	var data []SpotifyStreamingData
+	log.Printf("Starting JSON processing...")
 
-	decoder := json.NewDecoder(file)
-	err := decoder.Decode(&data)
+	// First, let's read the raw content to see what we're dealing with
+	content, err := io.ReadAll(file)
 	if err != nil {
+		return nil, fmt.Errorf("failed to read file content: %v", err)
+	}
+
+	log.Printf("Read %d bytes of JSON content", len(content))
+
+	// Log first 500 characters to see the structure
+	if len(content) > 0 {
+		previewLen := 500
+		if len(content) < previewLen {
+			previewLen = len(content)
+		}
+		preview := string(content[:previewLen])
+		log.Printf("JSON preview: %s", preview)
+	}
+
+	var data []SpotifyStreamingData
+	err = json.Unmarshal(content, &data)
+	if err != nil {
+		log.Printf("Failed to decode as array of SpotifyStreamingData: %v", err)
 		return nil, fmt.Errorf("failed to decode JSON: %v", err)
 	}
 
+	log.Printf("Decoded JSON successfully: %d total entries", len(data))
+
+	// Debug: log first entry to see structure
+	if len(data) > 0 {
+		log.Printf("First entry sample: Timestamp=%s, MsPlayed=%d, TrackName=%s, ArtistName=%s",
+			data[0].Timestamp, data[0].MsPlayed, data[0].TrackName, data[0].ArtistName)
+	}
+
 	validData := make([]SpotifyStreamingData, 0)
-	for _, stream := range data {
-		if stream.MsPlayed >= 30000 && stream.TrackName != "" && stream.ArtistName != "" {
+	skippedCount := 0
+	for i, stream := range data {
+		if stream.MsPlayed >= 5000 && stream.TrackName != "" && stream.ArtistName != "" {
 			validData = append(validData, stream)
+		} else {
+			skippedCount++
+			if i < 5 { // Log first 5 skipped entries for debugging
+				log.Printf("Skipped entry %d: MsPlayed=%d, TrackName='%s', ArtistName='%s'",
+					i, stream.MsPlayed, stream.TrackName, stream.ArtistName)
+			}
 		}
 	}
 
-	log.Printf("Processed JSON: %d total entries, %d valid streams", len(data), len(validData))
+	log.Printf("Processed JSON: %d total entries, %d valid streams, %d skipped", len(data), len(validData), skippedCount)
 	return validData, nil
 }
 
@@ -368,6 +429,7 @@ func (h *ImportHandler) saveToDatabase(userID string, data []SpotifyStreamingDat
 	insertListeningHistoryStmt, err := tx.Prepare(`
 		INSERT INTO listening_history (user_id, track_id, played_at, context_type, context_uri) 
 		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (user_id, track_id, played_at) DO NOTHING
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare listening_history statement: %v", err)
@@ -379,7 +441,7 @@ func (h *ImportHandler) saveToDatabase(userID string, data []SpotifyStreamingDat
 		artistID := h.generateArtistID(stream.ArtistName)
 		albumID := h.generateAlbumID(stream.AlbumName)
 
-		playedAt, err := time.Parse("2006-01-02 15:04", stream.Timestamp)
+		playedAt, err := time.Parse("2006-01-02T15:04:05Z", stream.Timestamp)
 		if err != nil {
 			log.Printf("Failed to parse timestamp %s: %v", stream.Timestamp, err)
 			continue
