@@ -18,6 +18,7 @@ type UserAnalytics struct {
 	UserID                 string                `json:"user_id"`
 	TotalListeningTime     int64                 `json:"total_listening_time_ms"`
 	ActualListeningTime    int64                 `json:"actual_listening_time_ms"`
+	TotalPlays             int                   `json:"total_plays"`
 	AvgListeningPercentage float64               `json:"avg_listening_percentage"`
 	TopGenres              []GenreStats          `json:"top_genres"`
 	ListeningPatterns      ListeningPatterns     `json:"listening_patterns"`
@@ -92,6 +93,13 @@ func (a *AnalyticsService) GenerateUserAnalytics(userID string, timeFilter strin
 		// Se não houver dados de tempo de escuta real, usar o tempo total como fallback
 		analytics.ActualListeningTime = analytics.TotalListeningTime
 		analytics.AvgListeningPercentage = 100.0
+	}
+
+	// Calcular total de plays
+	analytics.TotalPlays, err = a.calculateTotalPlays(userID, timeFilter)
+	if err != nil {
+		// Fallback para 0 se não conseguir calcular
+		analytics.TotalPlays = 0
 	}
 
 	analytics.TopGenres = a.analyzeGenres(topArtists.Items)
@@ -239,6 +247,52 @@ func (a *AnalyticsService) calculateActualListeningStats(userID string, timeFilt
 	}
 
 	return actualTime, avgPercentage, nil
+}
+
+func (a *AnalyticsService) calculateTotalPlays(userID string, timeFilter string) (int, error) {
+	if a.db == nil {
+		return 0, fmt.Errorf("database not available")
+	}
+
+	// Determinar o período de filtro baseado no parâmetro
+	var startDate time.Time
+	now := time.Now()
+
+	switch timeFilter {
+	case "6months":
+		startDate = now.AddDate(0, -6, 0)
+	case "1year":
+		startDate = now.AddDate(-1, 0, 0)
+	case "alltime":
+		startDate = time.Time{} // Data zero = sem filtro
+	default:
+		startDate = now.AddDate(0, -6, 0) // Default 6 meses
+	}
+
+	var query string
+	var args []interface{}
+
+	if timeFilter == "alltime" {
+		query = `
+			SELECT COUNT(*) as total_plays
+			FROM listening_history lh
+			WHERE lh.user_id = $1`
+		args = []interface{}{userID}
+	} else {
+		query = `
+			SELECT COUNT(*) as total_plays
+			FROM listening_history lh
+			WHERE lh.user_id = $1 AND lh.played_at >= $2`
+		args = []interface{}{userID, startDate}
+	}
+
+	var totalPlays int
+	err := a.db.QueryRow(query, args...).Scan(&totalPlays)
+	if err != nil {
+		return 0, fmt.Errorf("failed to calculate total plays: %w", err)
+	}
+
+	return totalPlays, nil
 }
 
 func (a *AnalyticsService) analyzeListeningPatternsFromDB(userID string, timeFilter string) (ListeningPatterns, error) {
