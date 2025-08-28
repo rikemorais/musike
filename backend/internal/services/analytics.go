@@ -19,6 +19,7 @@ type UserAnalytics struct {
 	TotalListeningTime     int64                 `json:"total_listening_time_ms"`
 	ActualListeningTime    int64                 `json:"actual_listening_time_ms"`
 	TotalPlays             int                   `json:"total_plays"`
+	AveragePlayTime        int64                 `json:"average_play_time_ms"`
 	AvgListeningPercentage float64               `json:"avg_listening_percentage"`
 	TopGenres              []GenreStats          `json:"top_genres"`
 	ListeningPatterns      ListeningPatterns     `json:"listening_patterns"`
@@ -100,6 +101,13 @@ func (a *AnalyticsService) GenerateUserAnalytics(userID string, timeFilter strin
 	if err != nil {
 		// Fallback para 0 se não conseguir calcular
 		analytics.TotalPlays = 0
+	}
+
+	// Calcular tempo médio de play
+	analytics.AveragePlayTime, err = a.calculateAveragePlayTime(userID, timeFilter)
+	if err != nil {
+		// Fallback para 0 se não conseguir calcular
+		analytics.AveragePlayTime = 0
 	}
 
 	analytics.TopGenres = a.analyzeGenres(topArtists.Items)
@@ -293,6 +301,52 @@ func (a *AnalyticsService) calculateTotalPlays(userID string, timeFilter string)
 	}
 
 	return totalPlays, nil
+}
+
+func (a *AnalyticsService) calculateAveragePlayTime(userID string, timeFilter string) (int64, error) {
+	if a.db == nil {
+		return 0, fmt.Errorf("database not available")
+	}
+
+	// Determinar o período de filtro baseado no parâmetro
+	var startDate time.Time
+	now := time.Now()
+
+	switch timeFilter {
+	case "6months":
+		startDate = now.AddDate(0, -6, 0)
+	case "1year":
+		startDate = now.AddDate(-1, 0, 0)
+	case "alltime":
+		startDate = time.Time{} // Data zero = sem filtro
+	default:
+		startDate = now.AddDate(0, -6, 0) // Default 6 meses
+	}
+
+	var query string
+	var args []interface{}
+
+	if timeFilter == "alltime" {
+		query = `
+			SELECT COALESCE(AVG(lh.listened_duration_ms), 0) as avg_play_time
+			FROM listening_history lh
+			WHERE lh.user_id = $1 AND lh.listened_duration_ms > 0`
+		args = []interface{}{userID}
+	} else {
+		query = `
+			SELECT COALESCE(AVG(lh.listened_duration_ms), 0) as avg_play_time
+			FROM listening_history lh
+			WHERE lh.user_id = $1 AND lh.played_at >= $2 AND lh.listened_duration_ms > 0`
+		args = []interface{}{userID, startDate}
+	}
+
+	var avgPlayTime float64
+	err := a.db.QueryRow(query, args...).Scan(&avgPlayTime)
+	if err != nil {
+		return 0, fmt.Errorf("failed to calculate average play time: %w", err)
+	}
+
+	return int64(avgPlayTime), nil
 }
 
 func (a *AnalyticsService) analyzeListeningPatternsFromDB(userID string, timeFilter string) (ListeningPatterns, error) {
