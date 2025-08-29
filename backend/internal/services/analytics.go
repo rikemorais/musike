@@ -33,6 +33,8 @@ type GenreStats struct {
 	Genre      string  `json:"genre"`
 	Percentage float64 `json:"percentage"`
 	TrackCount int     `json:"track_count"`
+	PlayCount  int     `json:"play_count"`
+	TotalTime  int64   `json:"total_time_ms"`
 }
 
 type ListeningPatterns struct {
@@ -134,7 +136,15 @@ func (a *AnalyticsService) GenerateUserAnalytics(userID string, timeFilter strin
 
 	analytics.DiversityScore = a.calculateDiversityScore(topArtists.Items, topTracks.Items)
 
-	analytics.RecentActivity = a.analyzeRecentActivity(recentlyPlayed.Items)
+	// Usar dados do banco local para atividade recente baseado no filtro
+	analytics.RecentActivity, err = a.analyzeRecentActivityFromDB(userID, timeFilter)
+	if err != nil {
+		// Fallback para análise baseada na API do Spotify se erro no banco
+		fmt.Printf("Erro ao buscar atividade recente do DB: %v, usando fallback da API\n", err)
+		analytics.RecentActivity = a.analyzeRecentActivity(recentlyPlayed.Items)
+	} else {
+		fmt.Printf("Atividade recente do DB retornou %d dias de dados\n", len(analytics.RecentActivity))
+	}
 
 	analytics.MonthlyStats = a.generateMonthlyStats()
 
@@ -438,7 +448,8 @@ func (a *AnalyticsService) analyzeGenresFromDB(userID string, timeFilter string)
 			SELECT 
 				UNNEST(string_to_array(TRIM(BOTH '[]"' FROM a.genres::text), '","')) as genre,
 				COUNT(*) as play_count,
-				COUNT(DISTINCT t.id) as track_count
+				COUNT(DISTINCT t.id) as track_count,
+				COALESCE(SUM(lh.listened_duration_ms), 0) as total_time
 			FROM listening_history lh
 			JOIN tracks t ON lh.track_id = t.id
 			JOIN artists a ON t.artist_id = a.id
@@ -452,7 +463,8 @@ func (a *AnalyticsService) analyzeGenresFromDB(userID string, timeFilter string)
 			SELECT 
 				UNNEST(string_to_array(TRIM(BOTH '[]"' FROM a.genres::text), '","')) as genre,
 				COUNT(*) as play_count,
-				COUNT(DISTINCT t.id) as track_count
+				COUNT(DISTINCT t.id) as track_count,
+				COALESCE(SUM(lh.listened_duration_ms), 0) as total_time
 			FROM listening_history lh
 			JOIN tracks t ON lh.track_id = t.id
 			JOIN artists a ON t.artist_id = a.id
@@ -476,20 +488,23 @@ func (a *AnalyticsService) analyzeGenresFromDB(userID string, timeFilter string)
 	for rows.Next() {
 		var genre string
 		var playCount, trackCount int
-		if err := rows.Scan(&genre, &playCount, &trackCount); err != nil {
+		var totalTime int64
+		if err := rows.Scan(&genre, &playCount, &trackCount, &totalTime); err != nil {
 			continue
 		}
 		totalPlays += playCount
 		genreStats = append(genreStats, GenreStats{
 			Genre:      genre,
 			TrackCount: trackCount,
+			PlayCount:  playCount,
+			TotalTime:  totalTime,
 		})
 	}
 
-	// Calcular percentagens
+	// Calcular percentagens baseadas em play_count, não track_count
 	for i := range genreStats {
 		if totalPlays > 0 {
-			genreStats[i].Percentage = float64(genreStats[i].TrackCount) / float64(totalPlays) * 100
+			genreStats[i].Percentage = float64(genreStats[i].PlayCount) / float64(totalPlays) * 100
 		}
 	}
 
@@ -708,6 +723,100 @@ func (a *AnalyticsService) calculateDiversityScore(artists []SpotifyArtist, trac
 	}
 
 	return (genreScore + artistScore) / 2.0 * 100 // 0-100 score
+}
+
+func (a *AnalyticsService) analyzeRecentActivityFromDB(userID string, timeFilter string) ([]ActivityPoint, error) {
+	if a.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	// Para atividade recente, sempre mostrar os últimos 7 dias independente do filtro
+	now := time.Now()
+
+	// Criar um mapa para armazenar atividades por data
+	activityMap := make(map[string]ActivityPoint)
+
+	// Gerar todos os últimos 7 dias (incluindo hoje)
+	fmt.Printf("Gerando datas para os últimos 7 dias:\n")
+	for i := 6; i >= 0; i-- {
+		date := now.AddDate(0, 0, -i)
+		dateStr := date.Format("2006-01-02")
+		fmt.Printf("Data gerada: %s\n", dateStr)
+		activityMap[dateStr] = ActivityPoint{
+			Date:        date,
+			TrackCount:  0,
+			UniqueTraks: 0,
+			Duration:    0,
+		}
+	}
+
+	startDate := now.AddDate(0, 0, -7)
+	fmt.Printf("Consultando dados desde: %s\n", startDate.Format("2006-01-02 15:04:05"))
+
+	// Primeiro, verificar se há dados na tabela
+	var totalRows int
+	countQuery := `SELECT COUNT(*) FROM listening_history WHERE user_id = $1`
+	countErr := a.db.QueryRow(countQuery, userID).Scan(&totalRows)
+	if countErr != nil {
+		fmt.Printf("Erro ao contar registros: %v\n", countErr)
+	} else {
+		fmt.Printf("Total de registros na listening_history para user %s: %d\n", userID, totalRows)
+	}
+
+	query := `
+		SELECT 
+			TO_CHAR(lh.played_at, 'YYYY-MM-DD') as date,
+			COUNT(*) as track_count,
+			COUNT(DISTINCT lh.track_id) as unique_tracks,
+			COALESCE(SUM(lh.listened_duration_ms), 0) as duration_ms
+		FROM listening_history lh
+		WHERE lh.user_id = $1 AND lh.played_at >= $2
+		GROUP BY TO_CHAR(lh.played_at, 'YYYY-MM-DD')
+		ORDER BY date DESC`
+
+	rows, err := a.db.Query(query, userID, startDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query recent activity: %w", err)
+	}
+	defer rows.Close()
+
+	// Atualizar o mapa com dados reais
+	dataCount := 0
+	for rows.Next() {
+		var dateStr string
+		var trackCount, uniqueTracks int
+		var durationMs int64
+
+		if err := rows.Scan(&dateStr, &trackCount, &uniqueTracks, &durationMs); err != nil {
+			continue
+		}
+
+		dataCount++
+		fmt.Printf("Dados encontrados para %s: %d tracks, %d únicos, %d ms\n", dateStr, trackCount, uniqueTracks, durationMs)
+
+		// Só incluir se a data está nos últimos 7 dias
+		if activityPoint, exists := activityMap[dateStr]; exists {
+			activityPoint.TrackCount = trackCount
+			activityPoint.UniqueTraks = uniqueTracks
+			activityPoint.Duration = durationMs
+			activityMap[dateStr] = activityPoint
+		}
+	}
+
+	fmt.Printf("Total de registros encontrados na query: %d\n", dataCount)
+
+	// Converter mapa para slice ordenado (mais recente primeiro)
+	var activity []ActivityPoint
+	for i := 6; i >= 0; i-- {
+		date := now.AddDate(0, 0, -i)
+		dateStr := date.Format("2006-01-02")
+		activityPoint := activityMap[dateStr]
+		fmt.Printf("Data final %s: %d tracks, %d únicos, %d ms\n",
+			dateStr, activityPoint.TrackCount, activityPoint.UniqueTraks, activityPoint.Duration)
+		activity = append(activity, activityPoint)
+	}
+
+	return activity, nil
 }
 
 func (a *AnalyticsService) analyzeRecentActivity(recentTracks []struct {
