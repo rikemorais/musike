@@ -83,12 +83,9 @@ export default function SpotifyDataImport() {
         formData.append('files', file)
       })
 
-      const response = await fetch('http://127.0.0.1:3000/api/v1/import/spotify', {
+      const response = await fetch('http://127.0.0.1:8080/api/v1/import/spotify-final', {
         method: 'POST',
-        body: formData,
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('musike_token')}`
-        }
+        body: formData
       })
 
       if (!response.ok) {
