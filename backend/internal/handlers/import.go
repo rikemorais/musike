@@ -86,9 +86,16 @@ func (h *ImportHandler) ImportSpotifyData(c *gin.Context) {
 
 	userID, exists := c.Get("userID")
 	if !exists {
-		// Para o import final, usar um userID fixo
-		userID = "11d57948-a20e-4ecb-b9fe-5f628347e3a7"
-		log.Printf("Using fixed userID for final import: %s", userID)
+		// Para o import final, buscar o usuário existente no banco
+		var existingUserID string
+		err := h.db.QueryRow("SELECT id FROM users LIMIT 1").Scan(&existingUserID)
+		if err != nil {
+			log.Printf("Failed to get existing user: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "No user found for import"})
+			return
+		}
+		userID = existingUserID
+		log.Printf("Using existing userID for import: %s", userID)
 	}
 
 	log.Printf("Starting Spotify data import for user: %s", userID)
