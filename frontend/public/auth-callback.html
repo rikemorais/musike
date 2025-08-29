@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Conectando com Spotify...</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #191414;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container { text-align: center; max-width: 400px; padding: 20px; }
+        .spinner {
+            border: 4px solid #333;
+            border-top: 4px solid #1DB954;
+            border-radius: 50%;
+            width: 50px; height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .success { color: #1DB954; }
+        .error { color: #ff4444; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="loading">
+            <div class="spinner"></div>
+            <h2>Conectando com Spotify...</h2>
+            <p>Aguarde...</p>
+        </div>
+        <div id="success" style="display: none;">
+            <h2 class="success">✓ Conectado!</h2>
+            <p>Redirecionando...</p>
+        </div>
+        <div id="error" style="display: none;">
+            <h2 class="error">✗ Erro</h2>
+            <p id="errorMessage"></p>
+        </div>
+    </div>
+    
+    <script>
+        console.log('Auth callback loaded');
+        
+        // Pegar parâmetros da URL
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get('code');
+        const error = params.get('error');
+        
+        console.log('Code exists:', !!code);
+        console.log('Error:', error);
+        
+        function showSuccess() {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('success').style.display = 'block';
+        }
+        
+        function showError(msg) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('errorMessage').textContent = msg;
+            document.getElementById('error').style.display = 'block';
+        }
+        
+        // Processar callback
+        if (error) {
+            showError('Acesso negado: ' + error);
+        } else if (!code) {
+            showError('Código não encontrado');
+        } else {
+            console.log('Fazendo chamada para API...');
+            fetch('http://127.0.0.1:8080/api/v1/auth/callback?code=' + encodeURIComponent(code))
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Resposta:', data);
+                    if (data.access_token && data.spotify_token) {
+                        localStorage.setItem('musike_token', data.access_token);
+                        localStorage.setItem('spotify_token', data.spotify_token);
+                        showSuccess();
+                        setTimeout(() => {
+                            window.location.href = 'http://127.0.0.1:3000/dashboard';
+                        }, 2000);
+                    } else {
+                        showError('Tokens não encontrados');
+                    }
+                })
+                .catch(err => {
+                    console.error('Erro:', err);
+                    showError('Falha na autenticação');
+                });
+        }
+    </script>
+</body>
+</html>
