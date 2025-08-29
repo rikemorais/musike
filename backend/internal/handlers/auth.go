@@ -147,10 +147,13 @@ func (h *AuthHandler) SpotifyCallback(c *gin.Context) {
 		}
 	}
 
-	frontendURL := "http://localhost:3001/callback"
-	redirectURL := frontendURL + "?access_token=" + jwtToken + "&spotify_token=" + token.AccessToken + "&user_id=" + user.ID
-
-	c.Redirect(http.StatusFound, redirectURL)
+	// Return JSON response with tokens
+	c.JSON(http.StatusOK, gin.H{
+		"access_token":  jwtToken,
+		"spotify_token": token.AccessToken,
+		"user_id":       user.ID,
+		"message":       "Authentication successful",
+	})
 }
 
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
