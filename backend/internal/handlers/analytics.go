@@ -131,7 +131,7 @@ func (h *AnalyticsHandler) GetUserAnalytics(c *gin.Context) {
 	}
 
 	// Parâmetros de filtro de tempo
-	timeFilter := c.DefaultQuery("time_filter", "6months") // 6months, 1year, alltime
+	timeFilter := c.DefaultQuery("time_filter", "month") // day, week, month, quarter, semester, year, alltime
 
 	token := &oauth2.Token{AccessToken: spotifyToken}
 

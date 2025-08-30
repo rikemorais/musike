@@ -64,6 +64,35 @@ func NewAnalyticsService(cfg *config.Config, db *sql.DB) *AnalyticsService {
 	}
 }
 
+// Helper function to get start date based on time filter
+func getStartDateForTimeFilter(timeFilter string) time.Time {
+	now := time.Now()
+
+	switch timeFilter {
+	case "day":
+		return now.AddDate(0, 0, -1)
+	case "week":
+		return now.AddDate(0, 0, -7)
+	case "month":
+		return now.AddDate(0, -1, 0)
+	case "quarter":
+		return now.AddDate(0, -3, 0)
+	case "semester":
+		return now.AddDate(0, -6, 0)
+	case "year":
+		return now.AddDate(-1, 0, 0)
+	case "alltime":
+		return time.Time{} // Data zero = sem filtro
+	// Manter compatibilidade com filtros antigos
+	case "6months":
+		return now.AddDate(0, -6, 0)
+	case "1year":
+		return now.AddDate(-1, 0, 0)
+	default:
+		return now.AddDate(0, -1, 0) // Default 1 mês
+	}
+}
+
 func (a *AnalyticsService) GenerateUserAnalytics(userID string, timeFilter string, spotifyService *SpotifyService, token *oauth2.Token) (*UserAnalytics, error) {
 	topTracks, err := spotifyService.GetTopTracks(token, "long_term", 50)
 	if err != nil {
@@ -164,20 +193,8 @@ func (a *AnalyticsService) calculateTotalListeningTimeFromDB(userID string, time
 		return 0, fmt.Errorf("database not available")
 	}
 
-	// Determinar o período de filtro baseado no parâmetro
-	var startDate time.Time
-	now := time.Now()
-
-	switch timeFilter {
-	case "6months":
-		startDate = now.AddDate(0, -6, 0)
-	case "1year":
-		startDate = now.AddDate(-1, 0, 0)
-	case "alltime":
-		startDate = time.Time{} // Data zero = sem filtro
-	default:
-		startDate = now.AddDate(0, -6, 0) // Default 6 meses
-	}
+	// Determinar o período de filtro usando função auxiliar
+	startDate := getStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -225,20 +242,8 @@ func (a *AnalyticsService) calculateActualListeningStats(userID string, timeFilt
 		return 0, 0.0, fmt.Errorf("database not available")
 	}
 
-	// Determinar o período de filtro baseado no parâmetro
-	var startDate time.Time
-	now := time.Now()
-
-	switch timeFilter {
-	case "6months":
-		startDate = now.AddDate(0, -6, 0)
-	case "1year":
-		startDate = now.AddDate(-1, 0, 0)
-	case "alltime":
-		startDate = time.Time{} // Data zero = sem filtro
-	default:
-		startDate = now.AddDate(0, -6, 0) // Default 6 meses
-	}
+	// Determinar o período de filtro usando função auxiliar
+	startDate := getStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -285,20 +290,8 @@ func (a *AnalyticsService) calculateTotalPlays(userID string, timeFilter string)
 		return 0, fmt.Errorf("database not available")
 	}
 
-	// Determinar o período de filtro baseado no parâmetro
-	var startDate time.Time
-	now := time.Now()
-
-	switch timeFilter {
-	case "6months":
-		startDate = now.AddDate(0, -6, 0)
-	case "1year":
-		startDate = now.AddDate(-1, 0, 0)
-	case "alltime":
-		startDate = time.Time{} // Data zero = sem filtro
-	default:
-		startDate = now.AddDate(0, -6, 0) // Default 6 meses
-	}
+	// Determinar o período de filtro usando função auxiliar
+	startDate := getStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -331,20 +324,8 @@ func (a *AnalyticsService) calculateAveragePlayTime(userID string, timeFilter st
 		return 0, fmt.Errorf("database not available")
 	}
 
-	// Determinar o período de filtro baseado no parâmetro
-	var startDate time.Time
-	now := time.Now()
-
-	switch timeFilter {
-	case "6months":
-		startDate = now.AddDate(0, -6, 0)
-	case "1year":
-		startDate = now.AddDate(-1, 0, 0)
-	case "alltime":
-		startDate = time.Time{} // Data zero = sem filtro
-	default:
-		startDate = now.AddDate(0, -6, 0) // Default 6 meses
-	}
+	// Determinar o período de filtro usando função auxiliar
+	startDate := getStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -377,20 +358,8 @@ func (a *AnalyticsService) calculateAverageTrackPopularity(userID string, timeFi
 		return 0.0, fmt.Errorf("database not available")
 	}
 
-	// Determinar o período de filtro baseado no parâmetro
-	var startDate time.Time
-	now := time.Now()
-
-	switch timeFilter {
-	case "6months":
-		startDate = now.AddDate(0, -6, 0)
-	case "1year":
-		startDate = now.AddDate(-1, 0, 0)
-	case "alltime":
-		startDate = time.Time{} // Data zero = sem filtro
-	default:
-		startDate = now.AddDate(0, -6, 0) // Default 6 meses
-	}
+	// Determinar o período de filtro usando função auxiliar
+	startDate := getStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -425,20 +394,8 @@ func (a *AnalyticsService) analyzeGenresFromDB(userID string, timeFilter string)
 		return nil, fmt.Errorf("database not available")
 	}
 
-	// Determinar o período de filtro baseado no parâmetro
-	var startDate time.Time
-	now := time.Now()
-
-	switch timeFilter {
-	case "6months":
-		startDate = now.AddDate(0, -6, 0)
-	case "1year":
-		startDate = now.AddDate(-1, 0, 0)
-	case "alltime":
-		startDate = time.Time{} // Data zero = sem filtro
-	default:
-		startDate = now.AddDate(0, -6, 0) // Default 6 meses
-	}
+	// Determinar o período de filtro usando função auxiliar
+	startDate := getStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -516,20 +473,8 @@ func (a *AnalyticsService) analyzeListeningPatternsFromDB(userID string, timeFil
 		return ListeningPatterns{}, fmt.Errorf("database not available")
 	}
 
-	// Determinar o período de filtro baseado no parâmetro
-	var startDate time.Time
-	now := time.Now()
-
-	switch timeFilter {
-	case "6months":
-		startDate = now.AddDate(0, -6, 0)
-	case "1year":
-		startDate = now.AddDate(-1, 0, 0)
-	case "alltime":
-		startDate = time.Time{} // Data zero = sem filtro
-	default:
-		startDate = now.AddDate(0, -6, 0) // Default 6 meses
-	}
+	// Determinar o período de filtro usando função auxiliar
+	startDate := getStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
