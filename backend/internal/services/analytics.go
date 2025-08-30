@@ -89,7 +89,7 @@ func getStartDateForTimeFilter(timeFilter string) time.Time {
 	case "1year":
 		return now.AddDate(-1, 0, 0)
 	default:
-		return now.AddDate(0, -1, 0) // Default 1 mês
+		return time.Time{} // Default todo o histórico
 	}
 }
 
