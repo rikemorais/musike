@@ -14,7 +14,7 @@ export default function DashboardPage() {
   const [topArtists, setTopArtists] = useState<SpotifyArtist[]>([])
   const [recentTracks, setRecentTracks] = useState<Array<{ track: SpotifyTrack, played_at: string }>>([])
   const [analytics, setAnalytics] = useState<UserAnalytics | null>(null)
-  const [timeRange, setTimeRange] = useState('medium_term')
+  const [timeRange, setTimeRange] = useState('all')
   const [isLoading, setIsLoading] = useState(true)
   const router = useRouter()
 
@@ -27,19 +27,98 @@ export default function DashboardPage() {
     loadDashboardData()
   }, [router, timeRange])
 
+  // Mapear nossos filtros para os filtros do Spotify e analytics
+  const getSpotifyTimeRange = (filter: string) => {
+    switch (filter) {
+      case 'day':
+      case 'week':
+        return 'short_term' // ~4 semanas
+      case 'month':
+      case 'quarter':
+        return 'medium_term' // ~6 meses  
+      case 'semester':
+      case 'year':
+      case 'all':
+        return 'long_term' // vários anos
+      default:
+        return 'medium_term'
+    }
+  }
+
+  const getAnalyticsFilter = (filter: string) => {
+    switch (filter) {
+      case 'day':
+        return 'day'
+      case 'week':
+        return 'week'
+      case 'month':
+        return 'month'
+      case 'quarter':
+        return 'quarter'
+      case 'semester':
+        return 'semester'
+      case 'year':
+        return 'year'
+      case 'all':
+        return 'alltime'
+      default:
+        return 'month'
+    }
+  }
+
+  const getActivityPeriodLabel = (filter: string) => {
+    switch (filter) {
+      case 'day':
+        return 'Últimas 24 Horas'
+      case 'week':
+        return 'Últimos 7 Dias'
+      case 'month':
+        return 'Últimos 30 Dias'
+      case 'quarter':
+        return 'Últimos 90 Dias'
+      case 'semester':
+        return 'Últimos 180 Dias'
+      case 'year':
+        return 'Últimos 365 Dias'
+      case 'all':
+        return 'Todo o Histórico'
+      default:
+        return 'Atividade Recente'
+    }
+  }
+
+  const getActivityDays = (filter: string) => {
+    switch (filter) {
+      case 'day':
+        return 1
+      case 'week':
+        return 7
+      case 'month':
+        return 30
+      case 'quarter':
+        return 90
+      case 'semester':
+        return 180
+      case 'year':
+        return 365
+      case 'all':
+        return 365 // máximo para não sobrecarregar
+      default:
+        return 30
+    }
+  }
+
   const loadDashboardData = async () => {
     try {
       setIsLoading(true)
 
-      // Mapear timeRange do Spotify para filtro de analytics
-      const analyticsFilter = timeRange === 'short_term' ? '6months' : 
-                             timeRange === 'medium_term' ? '6months' : 
-                             'alltime'
+      const spotifyTimeRange = getSpotifyTimeRange(timeRange)
+      const analyticsFilter = getAnalyticsFilter(timeRange)
 
       const [userProfile, tracksData, artistsData, recentData, analyticsData] = await Promise.all([
         SpotifyAPIService.getUserProfile(),
-        SpotifyAPIService.getTopTracks(timeRange, 10),
-        SpotifyAPIService.getTopArtists(timeRange, 10),
+        SpotifyAPIService.getTopTracks(spotifyTimeRange, 10),
+        SpotifyAPIService.getTopArtists(spotifyTimeRange, 10),
         SpotifyAPIService.getRecentlyPlayed(5),
         SpotifyAPIService.getUserAnalytics(analyticsFilter)
       ])
@@ -120,8 +199,9 @@ export default function DashboardPage() {
     usage: Math.round(usage)
   })) || []
 
+  const activityDays = getActivityDays(timeRange)
   const activityData = analytics?.recent_activity
-    .slice(-7)
+    .slice(-activityDays)
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
     .map(activity => ({
       date: new Date(activity.date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
@@ -160,9 +240,13 @@ export default function DashboardPage() {
                 onChange={(e) => setTimeRange(e.target.value)}
                 className="bg-gray-800 text-white px-3 py-2 rounded-lg border border-gray-600"
               >
-                <option value="short_term">Último mês</option>
-                <option value="medium_term">Últimos 6 meses</option>
-                <option value="long_term">Todos os tempos</option>
+                <option value="day">Último Dia</option>
+                <option value="week">Última Semana</option>
+                <option value="month">Último Mês</option>
+                <option value="quarter">Último Trimestre</option>
+                <option value="semester">Último Semestre</option>
+                <option value="year">Último Ano</option>
+                <option value="all">Todo o Histórico</option>
               </select>
 
 
@@ -315,7 +399,7 @@ export default function DashboardPage() {
         </div>
 
         <div className="bg-gray-800 rounded-lg p-6 mb-8">
-          <h3 className="text-xl font-semibold mb-4">Atividade dos Últimos 7 Dias</h3>
+          <h3 className="text-xl font-semibold mb-4">Atividade - {getActivityPeriodLabel(timeRange)}</h3>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={activityData}>
               <XAxis dataKey="date" />
