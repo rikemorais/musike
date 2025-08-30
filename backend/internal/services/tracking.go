@@ -14,6 +14,7 @@ import (
 	"musike-backend/internal/config"
 
 	"github.com/lib/pq"
+	"musike-backend/internal/utils"
 )
 
 type TrackingService struct {
@@ -72,8 +73,8 @@ func (s *TrackingService) StartTracking(userID, spotifyToken string) error {
 	s.activeTracking[userID] = &UserTracking{
 		UserID:       userID,
 		SpotifyToken: spotifyToken,
-		SessionStart: time.Now(),
-		LastUpdated:  time.Now(),
+		SessionStart: utils.GetLocalTime(),
+		LastUpdated:  utils.GetLocalTime(),
 		IsActive:     true,
 	}
 
@@ -225,7 +226,7 @@ func (s *TrackingService) updateUserTracking(tracking *UserTracking) {
 	s.trackingMutex.Lock()
 	defer s.trackingMutex.Unlock()
 
-	now := time.Now()
+	now := utils.GetLocalTime()
 
 	if currentTrack == nil {
 		if tracking.LastTrack != nil {
@@ -484,7 +485,7 @@ func (s *TrackingService) syncUserRecentlyPlayed(tracking *UserTracking) {
 		item := allTracks[i]
 
 		// Verificar se já existe no banco antes de salvar
-		playedAt, err := time.Parse(time.RFC3339, item.PlayedAt)
+		playedAt, err := utils.ParseSpotifyTimestampToLocal(item.PlayedAt)
 		if err != nil {
 			continue
 		}
@@ -514,8 +515,8 @@ func (s *TrackingService) saveRecentlyPlayedTrack(userID, spotifyToken string, r
 		return
 	}
 
-	// Parse do timestamp
-	playedAt, err := time.Parse(time.RFC3339, recentTrack.PlayedAt)
+	// Parse do timestamp convertendo para fuso local
+	playedAt, err := utils.ParseSpotifyTimestampToLocal(recentTrack.PlayedAt)
 	if err != nil {
 		log.Printf("Error parsing played_at time: %v", err)
 		return

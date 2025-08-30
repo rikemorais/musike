@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/oauth2"
 	"musike-backend/internal/config"
+	"musike-backend/internal/utils"
 )
 
 type AnalyticsService struct {
@@ -64,34 +65,6 @@ func NewAnalyticsService(cfg *config.Config, db *sql.DB) *AnalyticsService {
 	}
 }
 
-// Helper function to get start date based on time filter
-func getStartDateForTimeFilter(timeFilter string) time.Time {
-	now := time.Now()
-
-	switch timeFilter {
-	case "day":
-		return now.AddDate(0, 0, -1)
-	case "week":
-		return now.AddDate(0, 0, -7)
-	case "month":
-		return now.AddDate(0, -1, 0)
-	case "quarter":
-		return now.AddDate(0, -3, 0)
-	case "semester":
-		return now.AddDate(0, -6, 0)
-	case "year":
-		return now.AddDate(-1, 0, 0)
-	case "alltime":
-		return time.Time{} // Data zero = sem filtro
-	// Manter compatibilidade com filtros antigos
-	case "6months":
-		return now.AddDate(0, -6, 0)
-	case "1year":
-		return now.AddDate(-1, 0, 0)
-	default:
-		return time.Time{} // Default todo o histórico
-	}
-}
 
 func (a *AnalyticsService) GenerateUserAnalytics(userID string, timeFilter string, spotifyService *SpotifyService, token *oauth2.Token) (*UserAnalytics, error) {
 	topTracks, err := spotifyService.GetTopTracks(token, "long_term", 50)
@@ -194,7 +167,7 @@ func (a *AnalyticsService) calculateTotalListeningTimeFromDB(userID string, time
 	}
 
 	// Determinar o período de filtro usando função auxiliar
-	startDate := getStartDateForTimeFilter(timeFilter)
+	startDate := utils.GetStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -243,7 +216,7 @@ func (a *AnalyticsService) calculateActualListeningStats(userID string, timeFilt
 	}
 
 	// Determinar o período de filtro usando função auxiliar
-	startDate := getStartDateForTimeFilter(timeFilter)
+	startDate := utils.GetStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -291,7 +264,7 @@ func (a *AnalyticsService) calculateTotalPlays(userID string, timeFilter string)
 	}
 
 	// Determinar o período de filtro usando função auxiliar
-	startDate := getStartDateForTimeFilter(timeFilter)
+	startDate := utils.GetStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -325,7 +298,7 @@ func (a *AnalyticsService) calculateAveragePlayTime(userID string, timeFilter st
 	}
 
 	// Determinar o período de filtro usando função auxiliar
-	startDate := getStartDateForTimeFilter(timeFilter)
+	startDate := utils.GetStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -359,7 +332,7 @@ func (a *AnalyticsService) calculateAverageTrackPopularity(userID string, timeFi
 	}
 
 	// Determinar o período de filtro usando função auxiliar
-	startDate := getStartDateForTimeFilter(timeFilter)
+	startDate := utils.GetStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -395,7 +368,7 @@ func (a *AnalyticsService) analyzeGenresFromDB(userID string, timeFilter string)
 	}
 
 	// Determinar o período de filtro usando função auxiliar
-	startDate := getStartDateForTimeFilter(timeFilter)
+	startDate := utils.GetStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -474,7 +447,7 @@ func (a *AnalyticsService) analyzeListeningPatternsFromDB(userID string, timeFil
 	}
 
 	// Determinar o período de filtro usando função auxiliar
-	startDate := getStartDateForTimeFilter(timeFilter)
+	startDate := utils.GetStartDateForTimeFilter(timeFilter)
 
 	var query string
 	var args []interface{}
@@ -676,7 +649,7 @@ func (a *AnalyticsService) analyzeRecentActivityFromDB(userID string, timeFilter
 	}
 
 	// Para atividade recente, sempre mostrar os últimos 7 dias independente do filtro
-	now := time.Now()
+	now := utils.GetLocalTime()
 
 	// Criar um mapa para armazenar atividades por data
 	activityMap := make(map[string]ActivityPoint)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
+	"musike-backend/internal/utils"
 )
 
 type ImportHandler struct {
@@ -449,7 +450,7 @@ func (h *ImportHandler) saveToDatabase(userID string, data []SpotifyStreamingDat
 		artistID := h.generateArtistID(stream.ArtistName)
 		albumID := h.generateAlbumID(stream.AlbumName)
 
-		playedAt, err := time.Parse("2006-01-02T15:04:05Z", stream.Timestamp)
+		playedAt, err := utils.ParseSpotifyTimestampToLocal(stream.Timestamp)
 		if err != nil {
 			log.Printf("Failed to parse timestamp %s: %v", stream.Timestamp, err)
 			continue
