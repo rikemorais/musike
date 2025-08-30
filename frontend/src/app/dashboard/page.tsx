@@ -72,7 +72,13 @@ export default function DashboardPage() {
   const formatListeningTime = (ms: number) => {
     const hours = Math.floor(ms / 3600000)
     const minutes = Math.floor((ms % 3600000) / 60000)
-    return `${hours}h ${minutes}m`
+    
+    // Format hours with thousands separator if >= 1000
+    const formattedHours = hours >= 1000 
+      ? hours.toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.') 
+      : hours.toString()
+    
+    return `${formattedHours}h ${minutes}m`
   }
 
   const formatTimeAgo = (dateString: string) => {
